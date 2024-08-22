@@ -1,0 +1,9 @@
+/target
+
+# ROM files
+*.gb
+*.cgb
+*.gbc
+*.rom
+*.bin
+
