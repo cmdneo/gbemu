@@ -37,13 +37,7 @@ impl Cartidge {
     pub(crate) fn read(&self, addr: usize) -> u8 {
         // Some ROM sizes may not be multiples of SIZE_ROM_BANK, in such cases
         // an address might overflow on last ROM bank.
-        let safe_read = |addr: usize| {
-            if addr < self.rom.len() {
-                self.rom[addr]
-            } else {
-                0xFF
-            }
-        };
+        let safe_read = |addr: usize| self.rom.get(addr).copied().unwrap_or(0xFF);
 
         match_range! { v@addr {
             ADDR_ROM0 => { safe_read(self.mbc.rom0_idx * SIZE_ROM_BANK + v) }
@@ -55,6 +49,7 @@ impl Cartidge {
                     0xFF
                 }
             }
+
             _ => { unreachable!() }
         }}
     }
@@ -63,13 +58,13 @@ impl Cartidge {
         match_range! { v@addr {
             ADDR_ROM0 => { self.mbc.write(addr, val) }
             ADDR_ROM1 => { self.mbc.write(addr, val) }
-
             ADDR_EXT_RAM => {
                 if self.mbc.ram_enabled {
                     let a = self.get_ram_addr(v);
                     self.ram[a] = val;
                 }
             }
+
             _ => { unreachable!() }
         }}
     }

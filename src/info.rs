@@ -10,12 +10,7 @@ pub(crate) const KB: usize = 1 << 10;
 pub(crate) const FREQUENCY: u32 = 1 << 22; // ~4.19 MHz
 pub(crate) const FREQUENCY_2X: u32 = 1 << 23; // ~8.38 Mhz
 /// Time for which CPU remains stalled after a speed-switch.
-pub(crate) const SPEED_SWITCH_MCYCLES: u32 = 2050;
-
-/// Number of M-cycles needed to increment DIVA.
-pub(crate) const DIV_MPERIOD: u32 = 64;
-/// Number of M-cycles needed as per clock select to increment TIMA.
-pub(crate) const TMA_MPERIODS: [u32; 4] = [256, 4, 16, 64];
+pub(crate) const SPEED_SWITCH_MCYCLES: u16 = 100; //2050;
 
 // Memory system mapping, address and size information.
 // --------------------------------------------------------
@@ -25,7 +20,7 @@ pub(crate) const SIZE_VRAM_BANK: usize = 8 * KB;
 pub(crate) const SIZE_EXT_RAM: usize = 8 * KB;
 pub(crate) const SIZE_WRAM_BANK: usize = 4 * KB;
 pub(crate) const SIZE_OAM: usize = 160;
-pub(crate) const SIZE_IO_REGS: usize = 128;
+// pub(crate) const SIZE_IO_REGS: usize = 128;
 pub(crate) const SIZE_HRAM: usize = 127;
 
 // Switchable banks count.
@@ -74,7 +69,7 @@ pub(crate) const MODE_SCAN: u8 = 2;
 pub(crate) const MODE_DRAW: u8 = 3;
 
 /// Dots for PPU modes: (Scan + Draw + HBlank)
-pub(crate) const PPU_HSCAN_DOTS: u32 = 456;
+pub(crate) const PPU_HSCAN_DOTS: u16 = 456;
 pub(crate) const PPU_LINE_PIXELS: u8 = SCREEN_RESOLUTION.0 as u8;
 pub(crate) const PPU_DRAW_LINES: u8 = SCREEN_RESOLUTION.1 as u8;
 pub(crate) const PPU_VBLANK_LINES: u8 = 10;
@@ -85,8 +80,8 @@ pub(crate) const PPU_VBLANK_LINES: u8 = 10;
 pub(crate) const IO_JOYPAD: usize = 0xFF00;
 
 // Serial transfer
-// pub(crate) const IO_SB: usize = 0xFF01;
-// pub(crate) const IO_SC: usize = 0xFF02;
+pub(crate) const IO_SB: usize = 0xFF01;
+pub(crate) const IO_SC: usize = 0xFF02;
 
 // Timer and divider
 pub(crate) const IO_DIV: usize = 0xFF04;
@@ -156,12 +151,12 @@ pub(crate) const IO_BGPI: usize = 0xFF68;
 pub(crate) const IO_BGPD: usize = 0xFF69;
 pub(crate) const IO_OBPI: usize = 0xFF6A;
 pub(crate) const IO_OBPD: usize = 0xFF6B;
-// pub(crate) const IO_OPRI: usize = 0xFF6C;
+pub(crate) const IO_OPRI: usize = 0xFF6C;
 
-/// Select WRAM bank
+/// Select WRAM bank: 1-7.
 pub(crate) const IO_SVBK: usize = 0xFF70;
 
-/// VRAM bank select
+/// VRAM bank select: 0-1.
 pub(crate) const IO_VBK: usize = 0xFF4F;
 
 // VRAM DMA: src(1:hi, 2:lo), dst(3:hi, 4:lo) and 5:length/mode/start.
@@ -205,7 +200,7 @@ pub(crate) const CART_LOGO_VAL: [u8; 48] = [
     0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
 ];
 
-/// Runs in CGB mode only.
+/// Runs in CGB mode only, do speed switch before handing off control.
 pub(crate) const CART_CGB_ONLY: u8 = 0xC0;
 /// Supports CGB mode but is backwards compatible with monochrome.
 pub(crate) const CART_CGB_TOO: u8 = 0x80;

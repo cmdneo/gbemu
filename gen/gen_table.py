@@ -13,8 +13,9 @@ def main():
     j = data.json()
 
     # Just copy paste these...
+    print("// -------------------------Normal--------------------------------")
     print_syntax(j["unprefixed"])
-    print("--------------------------------------------------------------")
+    print("// -----------------------CB-Prefixed-----------------------------")
     print_syntax(j["cbprefixed"])
 
 
@@ -103,8 +104,14 @@ def print_syntax(instructions):
         if rest != "":
             rest = ", " + rest
 
-        # For Rust syntax, add number of cycles taken as comment.
-        print(f"a[{op}] = ins!({name.title()}{rest}); // #{cycles}")
+        cycles = [c // 4 for c in cycles]
+        if len(cycles) == 2:
+            cycles = f"{cycles[0]}, {cycles[1]}"
+        else:
+            cycles = f"{cycles[0]}, {cycles[0]}"
+
+        # For Rust syntax.
+        print(f"a[{op}] = ins!({cycles}, {name.title()}{rest});")
 
 
 if __name__ == "__main__":

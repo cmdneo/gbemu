@@ -115,9 +115,7 @@ macro_rules! match_range {
         match $match_var {
             $(x if $range.contains(&$match_var) => {
                 let $bind_name = x - *$range.start();
-                 // Do not warn if unused.
-                 // TODO use #expect(unused) when available.
-                _ = $bind_name;
+                _ = $bind_name; // Do not warn if unused.
                 $action
             })*
             _ => $final_action

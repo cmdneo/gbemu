@@ -1,71 +1,110 @@
-use crate::{
-    info::*,
-    mem::Mmu,
-    regs::{IntData, TimerCtrl},
-};
+use crate::regs::TimerCtrl;
 
 #[derive(Default)]
 pub(crate) struct Timer {
-    /// M-cycles left before incrementing DIVA.
-    div_counter: u32,
-    /// M-cycles .
-    tima_counter: u32,
-    /// Time period for TIMA in M-cycles.
-    tima_period: u32,
+    pub(crate) is_2x: bool,
+
+    // Registers owned by it.
+    pub(crate) tac: TimerCtrl,
+    pub(crate) tma: u8,
+    pub(crate) tima: u8,
+
+    /// Internal 14-bit sys-clock incremented every M-cycle.
+    sys_clock: u16,
+    apu_event: bool,
+    div_reset: bool,
+    tima_overflowed: bool,
 }
+
+const SYS_CLOCK_MASK: u16 = !(!0 << 14);
 
 impl Timer {
     pub(crate) fn new() -> Self {
-        Self {
-            tima_period: u32::MAX,
-            ..Default::default()
-        }
+        Default::default()
     }
 
-    pub(crate) fn step(&mut self, mmu: &mut Mmu, mcycles: u32) {
-        let div = mmu.read(IO_DIV);
-        let tac = TimerCtrl::new(mmu.read(IO_TAC));
-
-        let (ctr, inc_by) = cyclic_add(DIV_MPERIOD, self.div_counter, mcycles);
-        let div = div.wrapping_add(inc_by as u8);
-        self.div_counter = ctr;
-        mmu.set_reg(IO_DIV, div);
-
-        // If TIMA time period changes then reset counter for it.
-        let new_period = TMA_MPERIODS[tac.clock_select as usize];
-        if new_period != self.tima_period {
-            self.tima_period = new_period;
-            self.tima_counter = 0;
-        }
-
-        if tac.enable == 0 {
-            return;
-        }
-
-        let tma = mmu.read(IO_TMA);
-        let tima = mmu.read(IO_TIMA);
-        let (ctr, inc_by) = cyclic_add(self.tima_period, self.tima_counter, mcycles);
-        self.tima_counter = ctr;
-
-        // On overflow raise timer interrupt and reset TIMA to TMA.
-        if (0xFF - tima as u32) < inc_by {
-            let mut iflags = IntData::new(mmu.read(IO_IF));
-            iflags.timer = 1;
-            mmu.set_reg(IO_TIMA, tma);
-            mmu.set_reg(IO_IF, iflags.read());
+    /// Update timers for new `sys_clock` value.
+    /// Returns true if TIMER interrupt has been requested.
+    pub(crate) fn tick(&mut self, mcycles: u16) -> bool {
+        // DIV is either RESET or INCREMENTED.
+        let mcycles = if self.div_reset {
+            self.div_reset = false;
+            mcycles - 1
         } else {
-            mmu.set_reg(IO_TIMA, tima + inc_by as u8);
+            mcycles
+        };
+
+        let mut timer_intr = false;
+
+        for _ in 0..mcycles {
+            let new = (self.sys_clock + 1) & SYS_CLOCK_MASK;
+
+            timer_intr = self.tick_from_to(self.sys_clock, new) || timer_intr;
+            self.sys_clock = new;
         }
+
+        timer_intr
+    }
+
+    pub(crate) fn set_div(&mut self, _val: u8) {
+        // setting DIV resets it to 0.
+        self.sys_clock = 0;
+        self.div_reset = true;
+    }
+
+    pub(crate) fn get_div(&self) -> u8 {
+        (self.sys_clock >> 6) as u8
+    }
+
+    pub(crate) fn is_apu_event(&self) -> bool {
+        self.apu_event
+    }
+
+    fn tick_from_to(&mut self, old: u16, new: u16) -> bool {
+        let apu_idx = if self.is_2x { 11 } else { 10 };
+        self.apu_event = has_fallen(old, new, apu_idx);
+
+        if self.tac.enable == 0 {
+            return false;
+        }
+        let timer_intr = if self.tima_overflowed {
+            self.tima = self.tma;
+            self.tima_overflowed = false;
+            true
+        } else {
+            false
+        };
+
+        if !has_fallen(old, new, get_clock_fall_bit(self.tac.clock_select)) {
+            return timer_intr;
+        }
+
+        // After TIMA overflows, the interrupt and loading TMA to TIMA
+        // are delayed by one cycle and initially it holds 0.
+        if self.tima == 0xFF {
+            self.tima_overflowed = true;
+            self.tima = 0;
+        } else {
+            self.tima += 1;
+        }
+
+        timer_intr
     }
 }
 
-/// Cyclic add to `value` modulo `value_max`.
-/// Return result and number of times the value wrapped around.
-fn cyclic_add(value_max: u32, value: u32, inc_by: u32) -> (u32, u32) {
-    if inc_by < value_max - value {
-        (value + inc_by, 0)
-    } else {
-        let left = inc_by - (value_max - value);
-        (left % value_max, left / value_max + 1)
+/// Which bit of SYS_CLOCK should fall for TIMA to be incremented.
+#[inline]
+fn get_clock_fall_bit(clock_select: u8) -> u32 {
+    match clock_select {
+        1 => 1,
+        2 => 3,
+        3 => 5,
+        0 => 7,
+        _ => unreachable!(),
     }
+}
+
+#[inline]
+fn has_fallen(old: u16, new: u16, fall_bit: u32) -> bool {
+    (old >> fall_bit) & 1 == 1 && (new >> fall_bit) & 1 == 0
 }

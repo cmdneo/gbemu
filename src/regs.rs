@@ -10,7 +10,7 @@ bit_fields! {
     /// Lower 4-bits are set as: `ActionButtons` for `select_buttons`
     /// and `Dpad` for `select_dpad`.
     pub(crate) struct JoyPad<u8> {
-        _0: 4,
+        state: 4,
         select_dpad: 1,
         select_buttons: 1,
     }
@@ -44,6 +44,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Debug)]
     pub(crate) struct LcdCtrl<u8> {
         /// In non-CGB mode this overrides win_enable
         /// and has meaning `BG_and_window_enable`.
@@ -65,9 +66,9 @@ bit_fields! {
         ppu_mode: 2,
         ly_eq_lyc: 1,
         // Conditions for STAT interrupt.
-        mode0_int: 1,
-        mode1_int: 1,
-        mode2_int: 1,
+        mode0: 1,
+        mode1: 1,
+        mode2: 1,
         lyc_int: 1,
     }
 }
@@ -99,7 +100,7 @@ bit_fields! {
 }
 
 bit_fields! {
-    /// Interrupt data and Interrupt enable register fields.
+    /// Interrupt data, IE and IF register fields.
     #[derive(Debug)]
     pub(crate) struct IntData<u8> {
         vblank: 1,
@@ -116,5 +117,47 @@ bit_fields! {
         armed: 1,
         _1: 6,
         speed: 1,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioCtrl<u8> {
+        ch1: 1,
+        ch2: 1,
+        ch3: 1,
+        ch4: 1,
+        _0: 3,
+        enable: 1,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioPaning<u8> {
+        ch1_right: 1,
+        ch2_right: 1,
+        ch3_right: 1,
+        ch4_right: 1,
+        ch1_left: 1,
+        ch2_left: 1,
+        ch3_left: 1,
+        ch4_left: 1,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioVinNVol<u8> {
+        vol_right: 3,
+        vin_right: 1,
+        vol_left: 3,
+        vin_left: 1,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct Rp<u8> {
+        on: 1,
+        fixed: 1,
+        _1: 4,
+        read_en: 2,
     }
 }

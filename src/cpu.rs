@@ -4,14 +4,14 @@ mod table;
 
 use std::num::Wrapping;
 
-use isa::{Cond, Instr, Opcode, Operand, Reg};
-
 use crate::{
-    info, log,
+    info::{self, SPEED_SWITCH_MCYCLES},
+    log,
     macros::bit_fields,
     mem::Mmu,
-    regs::{IntData, Key1},
+    regs::Key1,
 };
+use isa::{Cond, Instr, Opcode, Operand, Reg};
 
 /// LDH adds 0xFF00 to its memory address operands before using
 /// them for accessing memory, it is for HRAM.  
@@ -23,7 +23,7 @@ const LDH_OFFSET: u16 = 0xFF00;
 /// https://rgbds.gbdev.io/docs/v0.8.0/gbz80.7
 #[derive(Default)]
 pub struct Cpu {
-    // CPU owns the memory and can be borrowed when needed by other components.
+    // CPU owns the mmu and mmu owns rest of the system.
     pub(crate) mmu: Mmu,
     /// When halted only the CPU is halted from executing instructions
     /// until an interrupt occurs, however, clocks still run.
@@ -46,12 +46,8 @@ pub struct Cpu {
 
     /// Interrupt master enable
     ime: bool,
-    /// Set ime after this many M-cycles(includes current cycle).
-    ime_set_delay: u32,
-
-    /// Number of M-cycles elapsed for the current step.
-    /// One read/write operation uses one M-cycle. Care not to double count.
-    mcycles: u32,
+    /// Set ime after next instruction completes.
+    ime_scheduled: bool,
 }
 
 bit_fields! {
@@ -77,29 +73,29 @@ impl Cpu {
     ///
     /// Returns a value of at least `info::SPEED_SWITCH_MCYCLES` on
     /// speed switch to dual-speed mode.
-    pub(crate) fn step(&mut self) -> u32 {
-        self.mcycles = 0;
+    pub(crate) fn step(&mut self) -> u16 {
+        let old_sched = self.ime_scheduled;
 
         // Either handle an interrupt or run an instruction.
-        if self.handle_interrupt() {
+        let mcycles = if self.handle_interrupt() {
+            5 // It takes 5-mcycles invoke ISR on an interrupt.
+        } else {
             if self.is_halted {
-                return 1;
+                1
+            } else if self.is_stopped {
+                0
+            } else {
+                self.exec_next_instr()
             }
-            if self.is_stopped {
-                return 0;
-            }
+        };
+
+        if self.ime_scheduled && old_sched == self.ime_scheduled {
+            self.ime = true;
+            self.ime_scheduled = false;
         }
 
-        self.exec_next_instr();
-
-        if self.ime_set_delay > 0 {
-            self.ime_set_delay = self.ime_set_delay.saturating_sub(self.mcycles);
-            if !self.ime && self.ime_set_delay == 0 {
-                self.ime = true;
-            }
-        }
-
-        self.mcycles
+        self.mmu.tick(mcycles);
+        mcycles
     }
 
     /// Handle an interrupt if any and return true if handled.
@@ -109,7 +105,6 @@ impl Cpu {
         // Wakeup from low-power states when a servicable interrupts comes.
         // We do not emulate any of the halt/stop bugs.
         if ints.read() != 0 && (self.is_halted || self.is_stopped) {
-            // log::info("cpu: wake-up");
             self.is_halted = false;
             self.is_stopped = false;
         }
@@ -119,7 +114,7 @@ impl Cpu {
             return false;
         }
 
-        let mut iflag = IntData::new(self.mmu.read(info::IO_IF));
+        let mut iflag = self.mmu.iflag;
 
         // According to interrupt priority.
         let new_pc = if ints.vblank == 1 {
@@ -138,39 +133,29 @@ impl Cpu {
             iflag.joypad = 0;
             info::INT_JOYPAD_VEC
         } else {
-            unreachable!()
+            unreachable!("at least one interrupt is always present")
         };
 
         // Reset handeled interrupt in IF and disable further interrupts.
-        self.mmu.set_reg(info::IO_IF, iflag.read());
+        self.mmu.iflag = iflag;
         self.ime = false;
 
-        // Execute ISR. It takes a total of 5 M-cycles.
-        self.mcycles += 2; // Run two wait states.
+        // Start executing ISR. It takes a total of 5 M-cycles. Those are:
+        // 2 wait states, 2 for saving PC and one for branching to ISR.
         self.do_push(self.pc.0);
         self.pc.0 = new_pc;
-        self.mcycles += 1;
 
         true
     }
 
-    fn exec_next_instr(&mut self) {
+    fn exec_next_instr(&mut self) -> u16 {
         let old_pc = self.pc.0;
         let ins = self.fetch();
+        let mut mcycles = ins.mcycles;
 
         let (oa, ob) = (ins.op1, ins.op2);
         let a = self.get_op_val(oa);
         let b = self.get_op_val(ob);
-
-        // Determine number of M-cycles to fetch/set operands. An operand is
-        // either fetched or set [but not both] only once, so checking each
-        // operand correctly calculates the number of bytes read/wrote.
-        if is_mem_operand(oa) {
-            self.mcycles += 1;
-        }
-        if is_mem_operand(ob) {
-            self.mcycles += 1;
-        }
 
         // M-cycles consumed for other memory accesses or operations by
         // instructions are calculated when they are run.
@@ -180,14 +165,13 @@ impl Cpu {
                 // `LD [a16], SP` loads two bytes.
                 if let (Operand::A16(a), Operand::Reg(Reg::SP)) = (oa, ob) {
                     let [h, l] = self.sp.0.to_be_bytes();
-                    self.mmu.write_cpu(a, l);
-                    self.mmu.write_cpu(a.wrapping_add(1), h);
-                    self.mcycles += 1; // For the extra 1-byte load.
+                    self.mmu.write(a, l);
+                    self.mmu.write(a.wrapping_add(1), h);
                 } else {
                     self.set_op_val(oa, b);
                 }
 
-                // Only LD has [HL+] and [HL-] operands, inc/dec as required.
+                // Only LD has [HL+] and [HL-] operands, inc/dec as present.
                 let d = get_hl_delta(oa) + get_hl_delta(ob);
                 let hl = self.get_reg(Reg::HL).wrapping_add_signed(d);
                 self.set_reg(Reg::HL, hl);
@@ -253,25 +237,29 @@ impl Cpu {
             Set => self.set_op_val(ob, b | (1 << a)),
 
             // Branch
-            Jr | Jp | Call | Ret | Reti | Rst => self.do_branch(ins.op, oa, a, b),
+            Jr | Jp | Call | Ret | Reti | Rst => {
+                if self.do_branch(ins.op, oa, a, b) {
+                    mcycles = ins.branch_mcycles
+                }
+            }
 
             // Interrupt and system control
             Di => self.ime = false,
-            // Setting IME=1 by EI is delayed by one M-cycle plus this cycle.
-            Ei => self.ime_set_delay = 2,
+            // Setting IME=1 by EI is delayed by one cycle.
+            Ei => self.ime_scheduled = true,
             // Halt CPU until an interrupt is recieved.
             Halt => self.is_halted = true,
 
             Stop => {
-                let key = Key1::new(self.mmu.read(info::IO_KEY1));
+                let key = self.mmu.key1;
                 if self.mmu.cart.is_cgb && key.armed == 1 && key.speed == 0 {
                     log::info("cpu: switched to dual-speed/CGB mode");
-                    self.pc.0 = 0;
                     self.do_speed_switch();
+                    mcycles = SPEED_SWITCH_MCYCLES;
                 } else {
                     self.is_stopped = true;
                 }
-                self.mmu.set_reg(info::IO_DIV, 0);
+                self.mmu.timer.set_div(0);
             }
 
             // Misc
@@ -300,10 +288,18 @@ impl Cpu {
             let newa = self.get_op_val(oa);
             let sx = format!("[{oa}={a}|{newa} {ob}={b}]");
             eprintln!(
-                "{sx:30} [Z{} N{} C{}] [${:04X} {}I] {}",
-                self.flags.z, self.flags.n, self.flags.c, old_pc, self.ime as u8, ins,
+                "{sx:30} [Z{} N{} C{}] [PC:${:04X} IVEC({}): {:05b}] {}",
+                self.flags.z,
+                self.flags.n,
+                self.flags.c,
+                old_pc,
+                self.ime as u8,
+                self.mmu.iflag.read(),
+                ins,
             );
         }
+
+        mcycles
     }
 
     /// Fetch the instruction pointed by PC, point PC to the next instruction
@@ -314,8 +310,6 @@ impl Cpu {
             log::warn("cpu: PC overflow, wrapped back to zero")
         }
 
-        // Number of bytes read is the number of M-cycles needed.
-        self.mcycles += pc.wrapping_sub(self.pc.0) as u32;
         self.pc.0 = pc;
         ins
     }
@@ -326,7 +320,7 @@ impl Cpu {
         match op {
             Operand::Absent => 0,
             Operand::Reg(r) => self.get_reg(r),
-            Operand::RegMem(r) => self.mmu.read_cpu(self.get_mem_addr(r)) as u16,
+            Operand::RegMem(r) => self.mmu.read(self.get_mem_addr(r)) as u16,
 
             // Cond is seperately inspected whenever needed, so just return 0.
             Operand::Cond(_) => 0,
@@ -342,8 +336,8 @@ impl Cpu {
             Operand::SPplusI8(i) => (self.sp.0 as i32 + i as i32) as u16,
 
             // [imm8] is a memory operand for LDH, see `LDH_OFFSET`.
-            Operand::A8(u) => self.mmu.read_cpu(u as u16 + LDH_OFFSET) as u16,
-            Operand::A16(u) => self.mmu.read_cpu(u) as u16,
+            Operand::A8(u) => self.mmu.read(u as u16 + LDH_OFFSET) as u16,
+            Operand::A16(u) => self.mmu.read(u) as u16,
         }
     }
 
@@ -353,11 +347,11 @@ impl Cpu {
     fn set_op_val(&mut self, op: Operand, val: u16) {
         match op {
             Operand::Reg(r) => self.set_reg(r, val),
-            Operand::RegMem(r) => self.mmu.write_cpu(self.get_mem_addr(r), val as u8),
+            Operand::RegMem(r) => self.mmu.write(self.get_mem_addr(r), val as u8),
 
             // [imm8] is a memory operand for LDH, see `LDH_OFFSET`.
-            Operand::A8(u) => self.mmu.write_cpu(u as u16 + LDH_OFFSET, val as u8),
-            Operand::A16(u) => self.mmu.write_cpu(u, val as u8),
+            Operand::A8(u) => self.mmu.write(u as u16 + LDH_OFFSET, val as u8),
+            Operand::A16(u) => self.mmu.write(u, val as u8),
 
             _ => panic!("Operand is not a destination, it has no location"),
         }
@@ -409,10 +403,9 @@ impl Cpu {
             Reg::E => self.e = l,
             Reg::H => self.h = l,
             Reg::L => self.l = l,
-
             Reg::AF => {
                 self.a = h;
-                self.flags.write(l & 0xF0)
+                self.flags.write(l & 0xF0) // Lower 4-bits must be always zero.
             }
             Reg::BC => (self.b, self.c) = (h, l),
             Reg::DE => (self.d, self.e) = (h, l),
@@ -430,21 +423,18 @@ impl Cpu {
         let [h, l] = v.to_be_bytes();
 
         self.sp -= 1;
-        self.mmu.write_cpu(self.sp.0, h);
+        self.mmu.write(self.sp.0, h);
         self.sp -= 1;
-        self.mmu.write_cpu(self.sp.0, l);
-
-        self.mcycles += 2;
+        self.mmu.write(self.sp.0, l);
     }
 
     /// Pop 2-bytes and increment `mcycles`.
     fn do_pop(&mut self) -> u16 {
-        let l = self.mmu.read_cpu(self.sp.0);
+        let l = self.mmu.read(self.sp.0);
         self.sp += 1;
-        let h = self.mmu.read_cpu(self.sp.0);
+        let h = self.mmu.read(self.sp.0);
         self.sp += 1;
 
-        self.mcycles += 2;
         u16::from_be_bytes([h, l])
     }
 
@@ -592,8 +582,8 @@ impl Cpu {
     }
 
     /// Execute branch instructions: JR, JP, RET, RETI, CALL and RST,
-    /// set PC return if the branch was taken.
-    fn do_branch(&mut self, op: Opcode, oa: Operand, a: u16, b: u16) {
+    /// set PC and return true if the branch was taken.
+    fn do_branch(&mut self, op: Opcode, oa: Operand, a: u16, b: u16) -> bool {
         let taken = match oa {
             Operand::Cond(cc) => match cc {
                 Cond::NC => self.flags.c == 0,
@@ -605,7 +595,7 @@ impl Cpu {
         };
 
         if !taken {
-            return;
+            return false;
         }
 
         let pc = if let Operand::Cond(_) = oa { b } else { a };
@@ -627,13 +617,11 @@ impl Cpu {
                 self.do_push(self.pc.0);
                 pc
             }
-
             _ => unreachable!(),
         };
 
-        // If a branch is taken then it consumes an extra M-cycle.
-        self.mcycles += 1;
         self.pc.0 = pc;
+        true
     }
 
     fn do_daa(&mut self) {
@@ -662,15 +650,18 @@ impl Cpu {
     }
 
     fn do_speed_switch(&mut self) {
-        self.mmu.is_cgb = true;
+        // Tell all other components that we are now operating in
+        // dual speed mode. This is done only once, so this is fine.
+        self.mmu.is_2x = true;
+        self.mmu.ppu.fetcher.is_2x = true;
+        self.mmu.timer.is_2x = true;
+        self.mmu.serial.is_2x = true;
 
-        let mut key = Key1::new(0);
-        key.speed = 1;
-        key.armed = 0;
-        self.mmu.set_reg(info::IO_KEY1, key.read());
-        // Simulate time for which cpu stops on speed-switch and
-        // also lets other tell that speed-switch has happened.
-        self.mcycles += info::SPEED_SWITCH_MCYCLES;
+        self.mmu.key1 = Key1 {
+            armed: 0,
+            speed: 1,
+            ..Default::default()
+        };
     }
 
     /// Set carry(to carry.LSB==1) and zero(to zero==0) flags.
@@ -680,11 +671,6 @@ impl Cpu {
         self.flags.c = carry & 1;
         self.flags.z = is_zero(zero as u16);
     }
-}
-
-/// Returns true if operand is a memory operand(`[...]`).
-fn is_mem_operand(op: Operand) -> bool {
-    matches!(op, Operand::RegMem(_) | Operand::A8(_) | Operand::A16(_))
 }
 
 /// Returns true is `op` is a reg16 operand.
@@ -703,25 +689,18 @@ fn is_zero(a: u16) -> u8 {
 }
 
 fn is_carry3(a: u16, b: u16, c: u16, bits: u32) -> u8 {
-    let m = mask(bits);
-    let (a, b, c) = (a & m, b & m, c & m);
-    let r = a.wrapping_add(b) & m;
-
-    if r < a {
+    if is_carry(a, b, bits) == 1 {
         1
     } else {
-        (r.wrapping_add(c) & m < c) as u8
+        is_carry(a.wrapping_add(b), c, bits)
     }
 }
 
 fn is_borrow3(a: u16, b: u16, c: u16, bits: u32) -> u8 {
-    let m = mask(bits);
-    let (a, b, c) = (a & m, b & m, c & m);
-
-    if b > a {
+    if is_borrow(a, b, bits) == 1 {
         1
     } else {
-        (c > (a - b)) as u8
+        is_borrow(a.wrapping_sub(b), c, bits)
     }
 }
 
@@ -742,11 +721,7 @@ fn is_borrow(a: u16, b: u16, bits: u32) -> u8 {
 /// A mask with `bit_cnt` number of lower-order bits set to 1.
 #[inline(always)]
 const fn mask(bit_cnt: u32) -> u16 {
-    if bit_cnt == 16 {
-        !0
-    } else {
-        !(!0 << bit_cnt)
-    }
+    u16::MAX >> (16 - bit_cnt)
 }
 
 /// Returns +1 for [HL+], -1 for [HL-] and otherwise 0.

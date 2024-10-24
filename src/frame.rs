@@ -38,7 +38,7 @@ impl Frame {
 impl Default for Frame {
     fn default() -> Self {
         Frame {
-            pixels: [[Color::default(); SCREEN_RESOLUTION.0]; SCREEN_RESOLUTION.1],
+            pixels: [[Default::default(); SCREEN_RESOLUTION.0]; SCREEN_RESOLUTION.1],
         }
     }
 }

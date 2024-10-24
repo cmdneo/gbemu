@@ -1,8 +1,8 @@
-use crate::{display, regs};
+use crate::{frame, regs};
 
 pub enum UserMsg {
     Buttons(ButtonState),
-    ClearFrame(display::Color),
+    ClearFrame(frame::Color),
     GetFrame,
     GetFrequency,
     Shutdown,
@@ -14,7 +14,7 @@ pub enum UserMsg {
 }
 
 pub enum EmulatorMsg {
-    NewFrame(Box<display::Frame>),
+    NewFrame(Box<frame::Frame>),
     Frequency(f64),
     ShuttingDown,
     Stop,

@@ -1,15 +1,6 @@
-use std::{
-    env::args,
-    process::exit,
-    sync::mpsc,
-    thread,
-};
+use std::{env::args, process::exit, sync::mpsc, thread};
 
-use gbemu::{
-    display::SCREEN_SIZE,
-    emulator::Emulator,
-    msg::{ButtonState, EmulatorMsg, UserMsg},
-};
+use gbemu::{ButtonState, Emulator, EmulatorMsg, UserMsg, SCREEN_SIZE};
 use macroquad::prelude::*;
 use miniquad::window::set_window_size;
 

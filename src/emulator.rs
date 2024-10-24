@@ -1,24 +1,26 @@
 use std::{
+    io::Write,
     sync::mpsc::{self, RecvError, TryRecvError},
     time::Instant,
+};
+
+use macroquad::{
+    miniquad::date::now,
+    rand::{rand, srand},
 };
 
 use crate::{
     cartridge::Cartidge,
     cpu::Cpu,
-    display::Frame,
+    frame::Frame,
     info, log,
     mem::Mmu,
     msg::{EmulatorMsg, UserMsg},
-    ppu::Ppu,
-    timer::Timer,
     EmuError,
 };
 
 pub struct Emulator {
     cpu: Cpu,
-    ppu: Ppu,
-    timer: Timer,
     /// Total T-cycles ticked since last `timer_reset`.
     tcycles: u64,
     target_freq: u32,
@@ -36,8 +38,6 @@ impl Emulator {
 
         Ok(Self {
             cpu,
-            ppu: Ppu::new(),
-            timer: Timer::new(),
             tcycles: 0,
             target_freq: info::FREQUENCY,
             actual_freq: 0.0,
@@ -64,8 +64,15 @@ impl Emulator {
         self.is_running = true;
         // self.cpu.trace_execution = true;
 
+        // Run several steps at once, total must be less than VBLANK interval.
+        // VBLANK is 4560 dots and the longest it takes for a step is 24 dots.
+        // Why 24 dots? It takes max 6 mcycles for an instruction and each
+        // mcycle is made up of 2 or 4 dots, and 4*6 = 24.
+        // So number of steps should be less than 190 (=4560/24) always.
         while self.is_running {
-            self.step();
+            for _ in 0..128 {
+                self.step();
+            }
 
             // If CPU is stopped then we wait in blocking mode.
             if !self.handle_msgs(&user_msg_rx, &emu_msg_tx, !self.cpu.is_stopped) {
@@ -73,10 +80,14 @@ impl Emulator {
                 break;
             }
 
+            // Only send back frame after entring VBLANK mode to avoid jitter.
             if self.frame_requested && self.cpu.mmu.get_mode() == info::MODE_VBLANK {
                 let mut f = Box::new(Frame::default());
 
-                self.ppu.fill_frame(f.as_mut());
+                print!("\r{:.3}Hz", self.actual_freq / 1e6);
+                std::io::stdout().flush().unwrap();
+
+                self.cpu.mmu.ppu.fill_frame(f.as_mut());
                 self.frame_requested = false;
                 emu_msg_tx.send(EmulatorMsg::NewFrame(f)).unwrap();
             }
@@ -86,6 +97,12 @@ impl Emulator {
                 let elapsed = self.start_time.elapsed().as_secs_f64();
                 let expected = elapsed * self.target_freq as f64;
                 let actual = self.tcycles as f64;
+                // if actual > expected {
+                //     sleep(Duration::from_secs_f64(
+                //         (actual - expected) / (self.target_freq as f64),
+                //     ));
+                //     break;
+                // }
 
                 if expected > actual {
                     self.actual_freq = actual / elapsed;
@@ -93,11 +110,6 @@ impl Emulator {
                 }
             }
         }
-    }
-
-    pub fn reset_timers(&mut self) {
-        self.tcycles = 0;
-        self.start_time = Instant::now();
     }
 
     /// Run a for a step each component.
@@ -116,9 +128,6 @@ impl Emulator {
             return;
         }
 
-        // Dual-speed mode does not change PPU or Audio speed.
-        let dots = mcycles * if self.cpu.mmu.is_cgb { 2 } else { 4 };
-
         // On speed-switch DIV clock does not tick, audio and video are not
         // processed properly for some time.
         // So, on speed-switch we reset PPU and Audio processes as those may
@@ -126,14 +135,9 @@ impl Emulator {
         if mcycles >= info::SPEED_SWITCH_MCYCLES {
             self.reset_timers();
             self.target_freq = info::FREQUENCY_2X;
-        } else {
-            self.timer.step(&mut self.cpu.mmu, mcycles);
-            self.ppu.tick(&mut self.cpu.mmu, dots);
-            // self.audio.step(&mut self.cpu.mem, norm_tcycles);
-            self.tcycles += mcycles as u64 * 4;
         }
 
-        self.cpu.mmu.step(mcycles);
+        self.tcycles += mcycles as u64 * 4;
     }
 
     /// Handle user messages and respond to them.
@@ -165,7 +169,7 @@ impl Emulator {
             }
 
             UserMsg::GetFrame => {
-                // Send frame only on VBLANK to avoid jitter.
+                // Send frame only on VBLANK to avoid choppiness.
                 self.frame_requested = true;
                 true
             }
@@ -192,10 +196,24 @@ impl Emulator {
         self.cpu.pc.0 = 0x0100;
         self.cpu.sp.0 = 0xFFFE;
 
-        self.cpu.mmu.set_reg(info::IO_JOYPAD, 0x3F);
-        self.cpu.mmu.set_reg(info::IO_SVBK, 1);
-        self.cpu.mmu.set_reg(info::IO_BGP, 0xFC);
-        self.cpu.mmu.set_reg(info::IO_LCDC, 0x91);
-        self.cpu.mmu.set_reg(info::IO_STAT, 0x85);
+        let m = &mut self.cpu.mmu;
+        m.joypad.write(0xCF);
+        m.wram_idx = 1;
+        m.ppu.bgp = 0xFC;
+        m.ppu.fetcher.lcdc.write(0x91);
+        m.ppu.stat.write(0x85);
+
+        srand((now() * 1000.0) as u64);
+        for n in m.ppu.bg_palette.iter_mut() {
+            *n = rand() as u8;
+        }
+        for n in m.ppu.bg_palette.iter_mut() {
+            *n = rand() as u8;
+        }
+    }
+
+    fn reset_timers(&mut self) {
+        self.tcycles = 0;
+        self.start_time = Instant::now();
     }
 }

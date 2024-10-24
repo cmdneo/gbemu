@@ -1,16 +1,22 @@
-pub(crate) mod cartridge;
-pub(crate) mod cpu;
-pub(crate) mod info;
-pub(crate) mod log;
-pub(crate) mod macros;
-pub(crate) mod mem;
-pub(crate) mod ppu;
-pub(crate) mod regs;
-pub(crate) mod timer;
+mod cartridge;
+mod cpu;
+mod info;
+mod log;
+mod macros;
+mod mem;
+mod ppu;
+mod regs;
+mod serial;
+mod timer;
 
-pub mod display;
-pub mod emulator;
-pub mod msg;
+// Modules which have public interfaces, export them here.
+mod emulator;
+mod frame;
+mod msg;
+
+pub use emulator::Emulator;
+pub use frame::{Color, Frame, SCREEN_SIZE};
+pub use msg::{ButtonState, EmulatorMsg, UserMsg};
 
 /// Emulator error type.
 #[derive(Debug)]
