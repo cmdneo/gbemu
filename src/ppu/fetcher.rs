@@ -11,13 +11,13 @@ type VramArray = [[u8; SIZE_VRAM_BANK]; VRAM_BANKS];
 pub(crate) struct LineFetcher {
     /// Objects(sprites) which lie on the current scan line. Max 10.
     /// Objects which come first in OAM should be placed first.
-    // For drawing priority following rules are followed:
+    // For object drawing priority:
     // In non-CGB sort by first X-position and then OAM index.
-    // In CGB mode sort by OAM index only. In case of a overlap with other
-    // objects the one which lies earlier in list this is drawn at the top.
+    // In CGB mode sort by OAM index only. In case of overlap
+    // obejct which appears first is considered.
     pub(crate) objects: Vec<OamEntry>,
     /// Containing pixels for the currently being drawn line.
-    pub(crate) screen_line: Vec<Pixel>,
+    pub(crate) screen_line: [Pixel; SCREEN_RESOLUTION.0],
     pub(crate) is_2x: bool,
 
     // Registers and memory owned by it.
@@ -28,9 +28,11 @@ pub(crate) struct LineFetcher {
     pub(crate) wx: u8,
     pub(crate) wy: u8,
 
+    state: FetcherState,
+    /// All object pixels are pre-drawn inside this.
+    obj_line: [Option<Pixel>; SCREEN_RESOLUTION.0],
     /// Pixel FIFO, it should always contain at least 8-pixels for mixing.
     fifo: VecDeque<Pixel>,
-    state: FetcherState,
     /// Current draw position on LCD.
     draw_x: u8,
     /// Current position for tile-fetch on BG/Window.
@@ -42,14 +44,12 @@ pub(crate) struct LineFetcher {
     /// Discard any extra pixels at the start of a line for sub-tile level
     /// scrolling, tile-level scrolling is handeled while tile fetching.
     /// This should be set to `SCX % 8`.
-    tile_extra_pixels: u8,
+    pixels_scrolled: u8,
     // Temporary state information.
     /// If window fetching mode, then put a window.
     window: Option<()>,
-    /// If sprite fetching mode, currently being fetched object.
-    object: Option<OamEntry>,
-    /// Tile info, for all BG/Window and Object.
-    tile: TileLine,
+    /// Cached tile info for BG/Window.
+    bg_tile: TileLine,
 }
 
 /// One processed pixel with information for constructing its color.
@@ -62,8 +62,7 @@ pub(crate) struct Pixel {
     pub(crate) palette: u8,
     /// Pixel is from an object, use object pallete.
     pub(crate) is_obj: bool,
-
-    /// BG-OBJ priority bit from BGMapAttr, not for object pixels.
+    /// BG-OBJ priority bit from BGMapAttr or OAM attribute.
     bg_priority: u8,
 }
 
@@ -97,10 +96,9 @@ impl LineFetcher {
     pub(crate) fn new() -> Self {
         Self {
             is_2x: false,
-            fifo: VecDeque::with_capacity(16),
             state: FetcherState::GetTileId,
             objects: Vec::with_capacity(10),
-            screen_line: Vec::with_capacity(SCREEN_RESOLUTION.0),
+            screen_line: [Default::default(); SCREEN_RESOLUTION.0],
             vram: [[0; SIZE_VRAM_BANK]; VRAM_BANKS],
             scx: 0,
             scy: 0,
@@ -108,13 +106,14 @@ impl LineFetcher {
             line: 0,
             wx: 0,
             wy: 0,
+            obj_line: [Default::default(); SCREEN_RESOLUTION.0],
+            fifo: VecDeque::with_capacity(16),
             win_y: 0,
             fetch_x: 0,
             lcdc: Default::default(),
-            tile_extra_pixels: 0,
+            pixels_scrolled: 0,
             window: None,
-            object: None,
-            tile: Default::default(),
+            bg_tile: Default::default(),
         }
     }
 
@@ -128,28 +127,19 @@ impl LineFetcher {
         // If a window if found while fetching then discard all pixels and start
         // fetch in window mode for the line. Once started a window fetch lasts
         // for the entire line as window extends to the end of the right border.
-        // If sprite if detected then fetch it that and mix it with current
+        // Objects are drawn in advance in a seperate buffer and mixed with current
         // bg/window pixels in the fifo as per bg-win priority bits.
 
+        if !self.objects.is_empty() {
+            self.render_objects();
+        }
         self.push_pixels_to_line();
 
         self.state = match self.state {
-            FetcherState::GetTileId => {
-                if self.object.is_some() {
-                    self.fetch_tile_id_obj()
-                } else {
-                    self.fetch_tile_id()
-                }
-            }
-            FetcherState::GetTileLow => self.fetch_tile_low(),
-            FetcherState::GetTileHigh => self.fetch_tile_high(),
-            FetcherState::PushPixels => {
-                if self.object.is_some() {
-                    self.push_pixels_obj()
-                } else {
-                    self.push_pixels()
-                }
-            }
+            FetcherState::GetTileId => FetcherState::GetTileLow,
+            FetcherState::GetTileLow => FetcherState::GetTileHigh,
+            FetcherState::GetTileHigh => self.fetch_tile(),
+            FetcherState::PushPixels => self.push_pixels(),
         };
     }
 
@@ -165,36 +155,30 @@ impl LineFetcher {
             self.win_y += 1;
         }
 
-        // Clear and reset everything
+        // Clear and set everything
         self.fifo.clear();
         self.objects.clear();
-        self.screen_line.clear();
-        self.object = None;
+        self.screen_line.fill_with(|| Pixel::default());
+        self.obj_line.fill_with(|| None);
         self.window = None;
         self.fetch_x = 0;
         self.draw_x = 0;
         self.line = line;
-        self.tile_extra_pixels = self.scx % 8;
+        self.pixels_scrolled = self.scx % 8;
         self.state = FetcherState::GetTileId;
-
-        assert!(self.objects.len() <= MAX_OBJ_PER_LINE);
-        if !self.is_2x {
-            self.objects.sort_by(|a, b| a.xpos.cmp(&b.xpos));
-        }
     }
 
     pub(crate) fn is_done(&self) -> bool {
-        self.screen_line.len() >= PPU_LINE_PIXELS as usize
+        self.draw_x as usize == SCREEN_RESOLUTION.0
     }
 
     // Fetcher steps for fetching tiles, each take two dots.
     // --------------------------------------------------------------
-    fn fetch_tile_id(&mut self) -> FetcherState {
-        let tile_map = self.get_tile_map_num();
+    fn fetch_tile(&mut self) -> FetcherState {
+        let tile_map = self.get_tile_map_number();
 
         // Position within the 256x256 px [32x32 tiled] background/window.
         let (tx, y) = if self.window.is_some() {
-            // TODO Is window tile-X calculation right? Test it.
             (self.fetch_x / 8, self.win_y)
         } else {
             (
@@ -203,56 +187,11 @@ impl LineFetcher {
             )
         };
 
-        self.tile = read_tile_info(self.is_2x, &self.vram, tile_map, tx, y / 8);
-        self.tile.line = y % 8;
+        self.bg_tile = TileLine::from_tilemap(&self.vram, tile_map, tx, y / 8, self.is_2x);
+        self.bg_tile.line = y % 8;
 
-        FetcherState::GetTileLow
-    }
-
-    fn fetch_tile_id_obj(&mut self) -> FetcherState {
-        let obj = self.object.unwrap();
-        self.tile = tile_info_from_obj(self.is_2x, obj);
-
-        // Tall objects are comprised of two consecutive tiles.
-        // Upper part has even numbered tile-ID.
-        // When yflip is enabled the two tiles switch positions.
-        if self.lcdc.obj_size == 1 {
-            let is_second = self.line + 16 - obj.ypos > 8;
-            self.tile.id = if is_second == self.tile.yflip {
-                self.tile.id & !1
-            } else {
-                self.tile.id | 1
-            }
-        }
-        // Get distance of the scan-line from object-tile's top line
-        // for selecting which line of the tile will be drawn.
-        self.tile.line = (self.line % 8).wrapping_sub(obj.ypos % 8) % 8;
-
-        FetcherState::GetTileLow
-    }
-
-    fn fetch_tile_low(&mut self) -> FetcherState {
-        // All data is read in the next step.
-        FetcherState::GetTileHigh
-    }
-
-    fn fetch_tile_high(&mut self) -> FetcherState {
-        let addr_mode = if self.object.is_some() {
-            1 // Objects always follow 1 addressing-mode.
-        } else {
-            self.lcdc.bg_win_tile_data
-        };
-
-        (self.tile.low, self.tile.high) = read_tile_line(
-            &self.vram,
-            addr_mode,
-            self.tile.bank,
-            self.tile.id,
-            self.tile.line,
-            self.tile.yflip,
-            self.tile.xflip,
-        );
-
+        self.bg_tile
+            .read_in_line(&self.vram, self.lcdc.bg_win_tile_data);
         FetcherState::PushPixels
     }
 
@@ -264,41 +203,23 @@ impl LineFetcher {
         }
 
         // In non-CGB mode lcdc 0-bit controls bg/window enable.
-        // If diabled display blank color, that is 0.
+        // If diabled its displays the blank color, that is 0.
         for i in 0..8 {
             let color = if !self.is_2x && self.lcdc.bg_win_priotity == 0 {
                 0
             } else {
-                tile_color_id(self.tile.low, self.tile.high, i)
+                self.bg_tile.get_color_id(i)
             };
 
             self.fifo.push_back(Pixel {
                 color_id: color,
-                palette: self.tile.palette,
-                bg_priority: self.tile.priority,
+                palette: self.bg_tile.palette,
+                bg_priority: self.bg_tile.bg_priority,
                 is_obj: false,
             });
         }
 
         self.fetch_x += 8;
-        FetcherState::GetTileId
-    }
-
-    fn push_pixels_obj(&mut self) -> FetcherState {
-        assert!(self.fifo.len() >= 8);
-        let obj = self.object.unwrap();
-
-        // Clip parts of the which are off-screen to the left.
-        // obj.xpos is object's real X-position + 8.
-        let xclip_start = if obj.xpos < 8 { 8 - obj.xpos } else { 0 };
-        for x in xclip_start..8 {
-            let old_idx = (x - xclip_start) as usize;
-            let px = self.mix_obj_pixel(self.is_2x, self.fifo[old_idx], x);
-            self.fifo[old_idx] = px;
-        }
-
-        // Return to normal operation after processing object pixels.
-        self.object = None;
         FetcherState::GetTileId
     }
 
@@ -308,13 +229,13 @@ impl LineFetcher {
             return;
         }
 
-        if self.tile_extra_pixels > 0 {
+        if self.pixels_scrolled > 0 {
             assert!(self.draw_x == 0);
-            for _ in 0..self.tile_extra_pixels {
+            for _ in 0..self.pixels_scrolled {
                 self.fifo.pop_front();
             }
 
-            self.tile_extra_pixels = 0;
+            self.pixels_scrolled = 0;
             return;
         }
 
@@ -324,12 +245,13 @@ impl LineFetcher {
     }
 
     /// Pop and pixel and sent it to LCD if FIFO has more than 8 pixels.
-    /// If a window is detected then, discard FIFO pixels and do setup
-    /// to start fetching window pixels.
-    /// If an object is detected then do setup to fetch its pixels and
-    /// do not pop any pixels until the object has been fully processed.
+    /// If a window is detected then setup fetcher to start fetching
+    /// their pixels for drawing.
     fn pop_pixel_checked(&mut self) {
-        if self.fifo.len() <= 8 || self.object.is_some() {
+        if self.fifo.len() <= 8 {
+            return;
+        }
+        if self.draw_x as usize == SCREEN_RESOLUTION.0 {
             return;
         }
 
@@ -347,36 +269,75 @@ impl LineFetcher {
             }
         }
 
-        // If any object at current position then restart the fetch cycle
-        // and fetch the object tile-line and attributes for pixel mixing.
-        if self.object.is_none() && self.lcdc.obj_enable == 1 {
-            self.object = self.pop_obj_at(self.draw_x);
+        // Mix BG/Win pixel with object pixel(if present and enabled).
+        let bg_px = self.fifo.pop_front().unwrap();
+        let px = match self.obj_line[self.draw_x as usize] {
+            Some(obj_px) if self.lcdc.obj_enable == 1 => self.mix_bg_obj_pixels(bg_px, obj_px),
+            _ => bg_px,
+        };
 
-            if self.object.is_some() {
-                assert!(self.fifo.len() >= 8);
-                self.state = FetcherState::GetTileId;
-                return;
-            }
-        }
-
-        self.screen_line.push(self.fifo.pop_front().unwrap());
+        self.screen_line[self.draw_x as usize] = px;
         self.draw_x += 1;
     }
 
-    /// Pop off and return the highest priority object lying on `xpos`.
-    fn pop_obj_at(&mut self, xpos: u8) -> Option<OamEntry> {
-        for i in 0..self.objects.len() {
-            let obj = self.objects[i];
-            if obj.xpos <= xpos + 8 && xpos + 8 < obj.xpos + 8 {
-                return Some(self.objects.remove(i));
+    /// Remove each object from `objects` and draw it.
+    fn render_objects(&mut self) {
+        assert!(self.objects.len() <= MAX_OBJ_PER_LINE);
+        // Sort objects according to their priority and draw them in advance.
+        if !self.is_2x {
+            self.objects.sort_by(|a, b| a.xpos.cmp(&b.xpos));
+        }
+        self.objects.reverse();
+
+        while let Some(obj) = self.objects.pop() {
+            // The obj.xpos stores object's X-position + 8. So, clip parts
+            // of the object which are off-screen to the left.
+            let tile = self.read_obj_tile_line(obj);
+            let xclip = if obj.xpos < 8 { 8 - obj.xpos } else { 0 };
+            let xbegin = if obj.xpos < 8 { 0 } else { obj.xpos - 8 };
+            let xend = obj.xpos.min(SCREEN_RESOLUTION.0 as u8);
+
+            for x in xbegin..xend {
+                let px = Pixel {
+                    palette: tile.palette,
+                    color_id: tile.get_color_id(x - xbegin + xclip),
+                    is_obj: true,
+                    bg_priority: obj.attrs.bg_priority,
+                };
+
+                // Color 0 of object is transparent so we never add it.
+                if self.obj_line[x as usize].is_none() && px.color_id != 0 {
+                    self.obj_line[x as usize] = Some(px);
+                }
             }
         }
-
-        None
     }
 
+    fn read_obj_tile_line(&mut self, obj: OamEntry) -> TileLine {
+        let mut tile = TileLine::from_obj(obj, self.is_2x);
+
+        // Tall objects are comprised of two consecutive tiles.
+        // Upper part has even numbered tile-ID.
+        // When yflip is enabled the two tiles switch positions.
+        if self.lcdc.obj_size == 1 {
+            let is_second = self.line + 16 - obj.ypos > 8;
+            tile.id = if is_second == tile.yflip {
+                tile.id & !1
+            } else {
+                tile.id | 1
+            }
+        }
+        // Tile line to be drawn for the object.
+        tile.line = (self.line % 8).wrapping_sub(obj.ypos % 8) % 8;
+        tile.read_in_line(&self.vram, 1);
+
+        tile
+    }
+
+    // fn get_obj_pixels( OamEntry)
+
     /// Get which tile-map to use for BG/Window.
-    fn get_tile_map_num(&self) -> u8 {
+    fn get_tile_map_number(&self) -> u8 {
         if self.window.is_some() {
             self.lcdc.win_tile_map
         } else {
@@ -384,25 +345,29 @@ impl LineFetcher {
         }
     }
 
-    /// Mix old pixels with the current object pixels as per priority.
-    /// `obj_px_idx` is object's pixel index in 0-7.
-    fn mix_obj_pixel(&self, is_cgb: bool, old: Pixel, obj_px_idx: u8) -> Pixel {
-        let obj = self.object.unwrap();
-
-        let (l, h) = (self.tile.low, self.tile.high);
-        let px = Pixel {
-            palette: self.tile.palette,
-            color_id: tile_color_id(l, h, obj_px_idx),
-            bg_priority: 0,
-            is_obj: true,
-        };
-
-        // FIXME Fix object overlaid over BG/Window wrongly.
-        // Color 0 for objects is transparent.
-        if px.color_id != 0 && is_obj_priority(is_cgb, self.lcdc, old, obj) {
-            px
+    fn mix_bg_obj_pixels(&self, bg: Pixel, obj: Pixel) -> Pixel {
+        // println!(
+        //     "[{}] Mix O:{} BG:{} Bg-prio:{}",
+        //     self.line, obj.color_id, bg.color_id, obj.bg_priority
+        // );
+        if obj.color_id == 0 {
+            return bg; // Obj color 0 is transparent.
+        }
+        if bg.color_id == 0 {
+            return obj; // Obj always has priority over color 0 of BG/Win.
+        }
+        if self.is_2x {
+            if self.lcdc.bg_win_priotity == 1 && (bg.bg_priority == 1 || obj.bg_priority == 1) {
+                bg
+            } else {
+                obj
+            }
         } else {
-            old
+            if obj.bg_priority == 1 {
+                bg
+            } else {
+                obj
+            }
         }
     }
 }
@@ -445,7 +410,7 @@ enum FetcherState {
     PushPixels,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct TileLine {
     id: u8,
     low: u8,
@@ -453,92 +418,73 @@ struct TileLine {
     bank: u8,
     palette: u8,
     line: u8,
-    priority: u8,
+    bg_priority: u8,
     xflip: bool,
     yflip: bool,
 }
 
-/// Determines if object pixel has priority over already drawn BG/Window/Object pixel.
-fn is_obj_priority(is_cgb: bool, lcdc: LcdCtrl, old: Pixel, obj: OamEntry) -> bool {
-    // Higher priority objects pixels are drawn above lower priority objects.
-    if old.is_obj {
-        return false;
+impl TileLine {
+    fn from_obj(obj: OamEntry, is_2x: bool) -> Self {
+        let (palette, bank) = if is_2x {
+            (obj.attrs.cgb_palette, obj.attrs.bank)
+        } else {
+            (obj.attrs.dmg_palette, 0)
+        };
+
+        Self {
+            id: obj.tile_id,
+            bank,
+            palette,
+            bg_priority: obj.attrs.bg_priority,
+            xflip: obj.attrs.xflip == 1,
+            yflip: obj.attrs.yflip == 1,
+            ..Default::default()
+        }
     }
-    // BG color 0 never overlaps with objects.
-    if old.color_id == 0 {
-        return true;
+
+    fn from_tilemap(vram: &VramArray, tile_map: u8, tx: u8, ty: u8, is_2x: bool) -> Self {
+        // Tile map is in Bank-0 and attributes in Bank-1 of VRAM.
+        let addr = tile_id_vram_addr(tile_map, tx, ty);
+        let id = vram[0][addr];
+        // If in non-CGB mode disable attributes to emulate the same.
+        let attrs = BgMapAttr::new(if is_2x { vram[1][addr] } else { 0 });
+
+        Self {
+            id,
+            bank: attrs.bank,
+            xflip: attrs.xflip == 1,
+            yflip: attrs.yflip == 1,
+            bg_priority: attrs.priority,
+            ..Default::default()
+        }
     }
-    // In non-CGB mode for BG colors 1-3 this attr bit alone decides priority.
-    if !is_cgb {
-        return obj.attrs.bg_priority == 0;
+
+    /// Read a line of tile data.
+    fn read_in_line(&mut self, vram: &VramArray, addr_mode: u8) {
+        let yoffset = if self.yflip {
+            7 - self.line as usize
+        } else {
+            self.line as usize
+        };
+
+        let addr = tile_data_vram_addr(addr_mode, self.id);
+        let (l, h) = (
+            vram[self.bank as usize][addr + 2 * yoffset],
+            vram[self.bank as usize][addr + 2 * yoffset + 1],
+        );
+
+        (self.low, self.high) = if self.xflip {
+            (l.reverse_bits(), h.reverse_bits())
+        } else {
+            (l, h)
+        };
     }
-    // In CGB mode several bits decide it.
-    lcdc.bg_win_priotity == 0 || (old.bg_priority == 0 && obj.attrs.bg_priority == 0)
-}
 
-/// Read a line of tile data.
-fn read_tile_line(
-    vram: &VramArray,
-    addr_mode: u8,
-    bank: u8,
-    id: u8,
-    yoffset: u8,
-    yflip: bool,
-    xflip: bool,
-) -> (u8, u8) {
-    let yoff = if yflip {
-        7 - yoffset as usize
-    } else {
-        yoffset as usize
-    };
-
-    let addr = tile_data_vram_addr(addr_mode, id);
-    let (l, h) = (
-        vram[bank as usize][addr + 2 * yoff],
-        vram[bank as usize][addr + 2 * yoff + 1],
-    );
-
-    if xflip {
-        (l.reverse_bits(), h.reverse_bits())
-    } else {
-        (l, h)
-    }
-}
-
-/// Read tile infomation from given tile-position and map number.
-fn read_tile_info(is_2x: bool, vram: &VramArray, tile_map: u8, tx: u8, ty: u8) -> TileLine {
-    // Tile map is in Bank 0 VRAM and attributes in Bank 1 of VRAM.
-    let addr = tile_id_vram_addr(tile_map, tx, ty);
-    let id = vram[0][addr];
-    // If in non-CGB mode disable attributes to emulate the same.
-    let attrs = BgMapAttr::new(if is_2x { vram[1][addr] } else { 0 });
-
-    TileLine {
-        id,
-        bank: attrs.bank,
-        xflip: attrs.xflip == 1,
-        yflip: attrs.yflip == 1,
-        priority: attrs.priority,
-        ..Default::default()
-    }
-}
-
-/// Make tile info from an object's `OamEntry`.
-fn tile_info_from_obj(is_cgb: bool, obj: OamEntry) -> TileLine {
-    let (palette, bank) = if is_cgb {
-        (obj.attrs.cgb_palette, obj.attrs.bank)
-    } else {
-        (obj.attrs.dmg_palette, 0)
-    };
-
-    TileLine {
-        id: obj.tile_id,
-        bank,
-        palette,
-        priority: obj.attrs.bg_priority,
-        xflip: obj.attrs.xflip == 1,
-        yflip: obj.attrs.yflip == 1,
-        ..Default::default()
+    #[inline]
+    fn get_color_id(&self, column: u8) -> u8 {
+        debug_assert!(column < 8);
+        let i = 7 - column; // Bit-7 is leftmost pixel.
+        ((self.low >> i) & 1) | ((self.high >> i) & 1) << 1
     }
 }
 
@@ -565,11 +511,4 @@ fn tile_id_vram_addr(tile_map: u8, tx: u8, ty: u8) -> usize {
     // Each tile-map is a 32x32 grid containing 1-byte tiles-IDs.
     let rel = (ty as usize) * 32 + (tx as usize);
     base + rel - *ADDR_VRAM.start()
-}
-
-#[inline(always)]
-fn tile_color_id(low: u8, hi: u8, column: u8) -> u8 {
-    debug_assert!(column < 8);
-    let i = 7 - column; // Bit-7 is leftmost pixel.
-    ((low >> i) & 1) | ((hi >> i) & 1) << 1
 }
