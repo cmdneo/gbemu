@@ -1,11 +1,9 @@
-use std::io;
-
 use crate::{
     cartridge::Cartidge,
     info::*,
     macros::{in_ranges, match_range},
     ppu::Ppu,
-    regs::{ActionButtons, CgbPaletteIndex, DPad, IntData, JoyPad, Key1, Rp},
+    regs::{ActionButtons, CgbPaletteIndex, DPad, IntrBits, JoyPad, Key1, Rp},
     serial::Serial,
     timer::Timer,
 };
@@ -13,6 +11,8 @@ use crate::{
 /// The memory sub-system, contains the `Cartridge`, `Ppu`, `Timer`, `Serial`
 /// and some registers, other registers are owned by components they belong to.
 pub(crate) struct Mmu {
+    /// Is running in dual-speed(aka CGB mode).
+    /// This property is replicated by all components contained by it.
     pub(crate) is_2x: bool,
     pub(crate) ppu: Ppu,
     pub(crate) timer: Timer,
@@ -21,9 +21,9 @@ pub(crate) struct Mmu {
 
     // Registers and memory owned by it.
     pub(crate) key1: Key1,
-    pub(crate) iflag: IntData,
+    pub(crate) iflag: IntrBits,
+    pub(crate) ienable: IntrBits,
     pub(crate) joypad: JoyPad,
-    pub(crate) ienable: IntData,
     pub(crate) bgpi: CgbPaletteIndex,
     pub(crate) obpi: CgbPaletteIndex,
     pub(crate) opri: u8,
@@ -57,13 +57,12 @@ impl Mmu {
         }
     }
 
-    /// Advance DMA(if any) and manage system clock.
     pub(crate) fn tick(&mut self, mcycles: u16) {
         // Dual-speed mode does not change PPU or Audio speed.
         let dots = if self.is_2x { mcycles * 2 } else { mcycles * 4 };
 
-        let news = self.ppu.tick(dots);
-        self.add_interrupt(news);
+        let intr = self.ppu.tick(dots);
+        self.add_interrupt(intr);
         if self.timer.tick(mcycles) {
             self.iflag.timer = 1;
         }
@@ -129,9 +128,6 @@ impl Mmu {
     pub(crate) fn write(&mut self, addr: u16, val: u8) {
         let addr = addr as usize;
 
-        if !self.is_accessible(addr) {
-            return;
-        }
         if is_cart_addr(addr) {
             self.cart.write(addr, val);
             return;
@@ -164,30 +160,6 @@ impl Mmu {
 
             _ => { unreachable!() }
         }}
-
-        // if addr >= TILE_MAP0 && addr < TILE_MAP1 {
-        //     let (x, y) = ((addr - TILE_MAP0) % 32, (addr - TILE_MAP0) / 32);
-        //     if y != 7 {
-        //         return;
-        //     }
-        //     println!("----------------------------------------------------");
-        //     println!(
-        //         "    [{}]   Wrote [{}] at {}x{}",
-        //         self.vram_idx, val as char, x, y
-        //     );
-        //     println!("----------------------------------------------------");
-        //     for i in 7..8 {
-        //         for j in 0..25 {
-        //             let c = self.ppu.fetcher.vram[0][0x1800 + i * 32 + j];
-        //             if y == i && x == j {
-        //                 print!("{}@", c as char);
-        //             } else {
-        //                 print!("{} ", c as char);
-        //             }
-        //         }
-        //         println!("|");
-        //     }
-        // }
     }
 
     fn read_reg(&self, addr: usize) -> u8 {
@@ -277,7 +249,7 @@ impl Mmu {
         // Verify written data and perform the action.
         match addr {
             IO_JOYPAD => {
-                set!(self.joypad, val, mask(4) << 4);
+                set!(self.joypad, val, mask(4));
                 self.update_joypad(self.dpad, self.buttons);
             }
             IO_SB => self.serial.sb = val,
@@ -363,39 +335,39 @@ impl Mmu {
     }
 
     /// Set IF register by ORing bits of `iflag` in.
-    pub(crate) fn add_interrupt(&mut self, iflag: IntData) {
+    pub(crate) fn add_interrupt(&mut self, iflag: IntrBits) {
         let val = self.iflag.read() | iflag.read();
         self.iflag.write(val);
     }
 
     /// Update joypad buttons and Joypad/P1 register.
-    /// Also, raise Joypad interrupt condition is met.
+    /// Also, raise Joypad interrupt if condition is met.
     pub(crate) fn update_joypad(&mut self, dpad: DPad, btns: ActionButtons) {
-        let mut new_state = mask(4); // In Joypad 0-bit means pressed.
+        let mut new = mask(4); // In Joypad 0-bit means pressed.
 
         if self.joypad.select_dpad == 0 {
-            new_state &= !dpad.read();
+            new &= !dpad.read();
         }
         if self.joypad.select_buttons == 0 {
-            new_state &= !btns.read();
+            new &= !btns.read();
         }
 
         // Interrupt only when any of the lower 4-bits of Joypad falls.
-        if (self.joypad.state & !new_state) & mask(4) != 0 {
-            self.add_interrupt(IntData {
+        if (self.joypad.state & !new) & mask(4) != 0 {
+            self.add_interrupt(IntrBits {
                 joypad: 1,
                 ..Default::default()
             });
         }
 
-        self.joypad.state = new_state;
+        self.joypad.state = new;
         self.dpad = dpad;
         self.buttons = btns;
     }
 
     /// Get `IF & IE` as `IntData`.
-    pub(crate) fn get_queued_ints(&self) -> IntData {
-        IntData::new(self.iflag.read() & self.ienable.read())
+    pub(crate) fn get_queued_ints(&self) -> IntrBits {
+        IntrBits::new(self.iflag.read() & self.ienable.read())
     }
 
     pub(crate) fn get_mode(&self) -> u8 {
@@ -418,29 +390,26 @@ impl Mmu {
         self.dma = addr;
     }
 
-    // Utility methods
-    //---------------------------------------------------------------
-    /// Checks if memroy region is accesible by CPU, when DMA ongoing.
-    fn is_accessible(&self, addr: usize) -> bool {
-        let src = if let Some(OamDma { src, .. }) = self.oam_dma {
-            src
-        } else {
-            return true;
-        };
+    // / Checks if memroy region is accesible by CPU, when DMA ongoing.
+    // fn is_accessible(&self, addr: usize) -> bool {
+    //     let src = if let Some(OamDma { src, .. }) = self.oam_dma {
+    //         src
+    //     } else {
+    //         return true;
+    //     };
 
-        // TODO are registers accessible during DMA??
-        // Only HRAM is accessible when DMA is ongoing for DMG.
-        if in_ranges!(addr, ADDR_HRAM) {
-            return true;
-        }
+    //     // Only HRAM is accessible when DMA is ongoing for DMG.
+    //     if in_ranges!(addr, ADDR_HRAM) {
+    //         return true;
+    //     }
 
-        let is_wram_addr = |v| in_ranges!(v, ADDR_WRAM0, ADDR_WRAM1);
-        // But for CGB, HRAM and either Cartridge or WRAM, whichever
-        // is not a DMA source is also accesible.
-        self.is_2x
-            && ((is_cart_addr(addr) != is_cart_addr(src))
-                || (is_wram_addr(addr) != is_wram_addr(src)))
-    }
+    //     let is_wram_addr = |v| in_ranges!(v, ADDR_WRAM0, ADDR_WRAM1);
+    //     // But for CGB, HRAM and either Cartridge or WRAM, whichever
+    //     // is not a DMA source is also accesible.
+    //     self.is_2x
+    //         && ((is_cart_addr(addr) != is_cart_addr(src))
+    //             || (is_wram_addr(addr) != is_wram_addr(src)))
+    // }
 }
 
 impl Default for Mmu {

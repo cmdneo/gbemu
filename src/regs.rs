@@ -101,8 +101,7 @@ bit_fields! {
 
 bit_fields! {
     /// Interrupt data, IE and IF register fields.
-    #[derive(Debug)]
-    pub(crate) struct IntData<u8> {
+    pub(crate) struct IntrBits<u8> {
         vblank: 1,
         stat: 1,
         timer: 1,

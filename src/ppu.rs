@@ -5,7 +5,7 @@ use fetcher::{LineFetcher, OamEntry, Pixel};
 use crate::{
     frame::{self, Color, Frame},
     info::*,
-    regs::{CgbPaletteColor, IntData, LcdStat},
+    regs::{CgbPaletteColor, IntrBits, LcdStat},
 };
 
 pub(crate) struct Ppu {
@@ -70,16 +70,16 @@ impl Ppu {
     }
 
     /// Run for `dots` cycles, `dots` must be an even number.
-    pub(crate) fn tick(&mut self, dots: u16) -> IntData {
+    pub(crate) fn tick(&mut self, dots: u16) -> IntrBits {
         // Reset and do nothing if PPU is disabled.
         if self.fetcher.lcdc.ppu_enable == 0 {
             self.reset();
-            return IntData::new(0);
+            return IntrBits::new(0);
         }
 
         assert!(dots % 2 == 0);
         self.dots_left += dots;
-        let mut ret = IntData::default();
+        let mut ret = IntrBits::default();
 
         while self.dots_left > 0 {
             let mode = match self.mode {
@@ -153,7 +153,6 @@ impl Ppu {
     }
 
     fn step_hblank(&mut self) -> PpuMode {
-        // TODO goto Scan directly if reset detected??
         // If current scan-line finishes and it was last draw line then
         // goto VBlank, if not last line then just go back to OAM-Scan mode.
         if self.eat_dots(self.dots_left) {
@@ -181,8 +180,8 @@ impl Ppu {
 
     /// Update STAT and LY registers and raise interrupts if any.
     /// Must be called after each step.
-    fn update_lcd_state(&mut self, new_mode: PpuMode) -> IntData {
-        let mut iflag = IntData::new(0);
+    fn update_lcd_state(&mut self, new_mode: PpuMode) -> IntrBits {
+        let mut iflag = IntrBits::new(0);
 
         // For interrupt on condition: LYC == LY.
         // It is trigerred at the begining of a scan line only.
