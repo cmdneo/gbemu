@@ -38,14 +38,6 @@ pub(crate) struct Mmu {
 
     dpad: DPad,
     buttons: ActionButtons,
-    oam_dma: Option<OamDma>,
-}
-
-#[derive(Clone, Copy)]
-struct OamDma {
-    src: usize,
-    copied: usize,
-    count: usize,
 }
 
 impl Mmu {
@@ -69,35 +61,13 @@ impl Mmu {
         if self.serial.tick(mcycles, self.cart.is_cgb) {
             self.iflag.serial = 1;
         }
-
-        let mut dma = if let Some(d) = self.oam_dma {
-            d
-        } else {
-            return;
-        };
-
-        for _ in 0..mcycles {
-            if dma.copied == dma.count {
-                break;
-            }
-
-            let addr = dma.src + dma.copied;
-            self.ppu.oam[dma.copied] = self.read(addr as u16);
-            dma.copied += 1;
-        }
-
-        if dma.copied == dma.count {
-            self.oam_dma = None;
-        } else {
-            self.oam_dma = Some(dma);
-        }
     }
 
     // On real hardware some memory locations are not inaccessible for reading
-    // or writing or both because of some PPU mode or it is a register which
+    // or writing or both because of some PPU mode, or it is a register which
     // does not support either read or write.
     // In our emulator we do check for such conditions when writing data, but
-    // not when reading as reading does not have any side-effects.
+    // not when reading as reading does not have any side effects.
 
     /// Reads one byte, use when executing instructions by CPU.
     pub(crate) fn read(&self, addr: u16) -> u8 {
@@ -141,6 +111,8 @@ impl Mmu {
                 // FIXME Fix this prevents test ROMs from fully writing DATA.
                 if mode != MODE_DRAW {
                     self.ppu.fetcher.vram[self.vram_idx][a] = val
+                } else {
+                    println!("iVRAM access in {}", mode);
                 }
             }
             ADDR_WRAM0 => { self.wram[0][a] = val}
@@ -148,8 +120,10 @@ impl Mmu {
             ADDR_ECHO_RAM => { self.write(get_echo_ram_addr(a) as u16, val) }
 
             ADDR_OAM => {
-                if mode != MODE_DRAW && mode != MODE_SCAN {
-                    self.ppu.oam[a] = val
+                if matches!(mode,  MODE_HBLANK | MODE_VBLANK) {
+                    self.ppu.oam[a] = val;
+                } else {
+                    println!("iOAM access in {}", mode);
                 }
             }
 
@@ -326,7 +300,7 @@ impl Mmu {
             // IO_HDMA3 => { = val}
             // IO_HDMA4 => { = val}
             // IO_HDMA5 => { = val}
-            IO_DMA => self.start_dma(val),
+            IO_DMA => self.do_dma(val),
             IO_KEY1 => set!(self.key1, val, !mask(1)),
             IO_RP => set!(self.rp, val, 1 << 1),
 
@@ -365,51 +339,21 @@ impl Mmu {
         self.buttons = btns;
     }
 
-    /// Get `IF & IE` as `IntData`.
-    pub(crate) fn get_queued_ints(&self) -> IntrBits {
-        IntrBits::new(self.iflag.read() & self.ienable.read())
-    }
-
     pub(crate) fn get_mode(&self) -> u8 {
         self.ppu.stat.ppu_mode
     }
 
-    fn start_dma(&mut self, addr: u8) {
+    fn do_dma(&mut self, addr: u8) {
         // DMA address specifies the high-byte value of the 16-bit
         // source address. Valid values for it are from 0x00 to 0xDF.
-        // If it is overflowing we just wrap around it.
-        let src = ((addr as usize) % 0xDF) << 4;
-
-        // Src is from $XX00 to $XX9F.
-        self.oam_dma = Some(OamDma {
-            src,
-            copied: 0,
-            count: ADDR_OAM.count(),
-        });
-
+        // If it is more than that then we just wrap around it.
+        let src = ((addr as usize) % (0xDF + 1)) << 8;
         self.dma = addr;
+
+        for (i, _) in ADDR_OAM.enumerate() {
+            self.ppu.oam[i] = self.read((src + i) as u16);
+        }
     }
-
-    // / Checks if memroy region is accesible by CPU, when DMA ongoing.
-    // fn is_accessible(&self, addr: usize) -> bool {
-    //     let src = if let Some(OamDma { src, .. }) = self.oam_dma {
-    //         src
-    //     } else {
-    //         return true;
-    //     };
-
-    //     // Only HRAM is accessible when DMA is ongoing for DMG.
-    //     if in_ranges!(addr, ADDR_HRAM) {
-    //         return true;
-    //     }
-
-    //     let is_wram_addr = |v| in_ranges!(v, ADDR_WRAM0, ADDR_WRAM1);
-    //     // But for CGB, HRAM and either Cartridge or WRAM, whichever
-    //     // is not a DMA source is also accesible.
-    //     self.is_2x
-    //         && ((is_cart_addr(addr) != is_cart_addr(src))
-    //             || (is_wram_addr(addr) != is_wram_addr(src)))
-    // }
 }
 
 impl Default for Mmu {
@@ -438,7 +382,6 @@ impl Default for Mmu {
 
             dpad: Default::default(),
             buttons: Default::default(),
-            oam_dma: None,
         }
     }
 }
