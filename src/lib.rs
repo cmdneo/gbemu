@@ -1,4 +1,6 @@
+mod apu;
 mod cartridge;
+mod counter;
 mod cpu;
 mod info;
 mod log;
@@ -9,7 +11,7 @@ mod regs;
 mod serial;
 mod timer;
 
-// Modules which have public interfaces, export them here.
+// Modules which have public interfaces.
 mod emulator;
 mod frame;
 mod msg;

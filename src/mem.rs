@@ -1,4 +1,5 @@
 use crate::{
+    apu::Apu,
     cartridge::Cartidge,
     info::*,
     macros::{in_ranges, match_range},
@@ -12,9 +13,12 @@ use crate::{
 /// and some registers, other registers are owned by components they belong to.
 pub(crate) struct Mmu {
     /// Is running in dual-speed(aka CGB mode).
-    /// This property is replicated by all components contained by it.
+    // This property is duplicated in all components contained in it which
+    // need it, because we do not want to use `Rc` and its good enough.
     pub(crate) is_2x: bool,
+
     pub(crate) ppu: Ppu,
+    pub(crate) apu: Apu,
     pub(crate) timer: Timer,
     pub(crate) serial: Serial,
     pub(crate) cart: Cartidge,
@@ -31,6 +35,7 @@ pub(crate) struct Mmu {
     pub(crate) rp: Rp,
     pub(crate) wram_idx: usize,
     pub(crate) vram_idx: usize,
+
     // First WRAM region always refers to bank-0 and
     // second WRAM region can refer to any of the 1-7 banks.
     wram: [[u8; SIZE_WRAM_BANK]; WRAM_BANKS],
@@ -43,31 +48,50 @@ pub(crate) struct Mmu {
 impl Mmu {
     pub(crate) fn new(cartd: Cartidge) -> Self {
         Self {
-            wram_idx: 1,
+            is_2x: false,
             cart: cartd,
-            ..Default::default()
+
+            ppu: Ppu::new(),
+            apu: Apu::new(),
+            timer: Timer::new(),
+            serial: Serial::new(),
+
+            wram: [[0; SIZE_WRAM_BANK]; WRAM_BANKS],
+            hram: [0; SIZE_HRAM],
+            ienable: Default::default(),
+            iflag: Default::default(),
+            key1: Default::default(),
+            joypad: Default::default(),
+            bgpi: Default::default(),
+            obpi: Default::default(),
+            wram_idx: 1,
+            vram_idx: 0,
+            opri: 0,
+            dma: 0,
+            rp: Rp::new(0b10),
+
+            dpad: Default::default(),
+            buttons: Default::default(),
         }
     }
 
-    pub(crate) fn tick(&mut self, mcycles: u16) {
+    pub(crate) fn tick(&mut self, mcycles: u32) {
         // Dual-speed mode does not change PPU or Audio speed.
         let dots = if self.is_2x { mcycles * 2 } else { mcycles * 4 };
 
         let intr = self.ppu.tick(dots);
         self.add_interrupt(intr);
+
         if self.timer.tick(mcycles) {
             self.iflag.timer = 1;
         }
+
         if self.serial.tick(mcycles, self.cart.is_cgb) {
             self.iflag.serial = 1;
         }
-    }
 
-    // On real hardware some memory locations are not inaccessible for reading
-    // or writing or both because of some PPU mode, or it is a register which
-    // does not support either read or write.
-    // In our emulator we do check for such conditions when writing data, but
-    // not when reading as reading does not have any side effects.
+        self.apu.tick(dots, self.timer.apu_ticks);
+    }
 
     /// Reads one byte, use when executing instructions by CPU.
     pub(crate) fn read(&self, addr: u16) -> u8 {
@@ -78,6 +102,8 @@ impl Mmu {
         }
 
         match_range! { a@addr {
+            ADDR_AUDIO_WAVE_RAM => { self.apu.ch3.wave_ram[a] }
+
             ADDR_VRAM => { self.ppu.fetcher.vram[self.vram_idx][a] }
             ADDR_WRAM0 => { self.wram[0][a] }
             ADDR_WRAM1 => { self.wram[self.wram_idx][a] }
@@ -103,30 +129,16 @@ impl Mmu {
             return;
         }
 
-        let mode = self.ppu.stat.ppu_mode;
-        // Ignore writes to graphics related memory regions which are
-        // inaccessible during certain PPU modes.
+        // Audio wave RAM is lies in the range of ADDR_IO_REGS,
+        // so it must be before it otherwise we will lose writes to it.
         match_range! { a@addr {
-            ADDR_VRAM => {
-                // FIXME Fix this prevents test ROMs from fully writing DATA.
-                if mode != MODE_DRAW {
-                    self.ppu.fetcher.vram[self.vram_idx][a] = val
-                } else {
-                    println!("iVRAM access in {}", mode);
-                }
-            }
+            ADDR_AUDIO_WAVE_RAM => { self.apu.ch3.wave_ram[a] = val }
+
+            ADDR_VRAM => { self.ppu.fetcher.vram[self.vram_idx][a] = val }
             ADDR_WRAM0 => { self.wram[0][a] = val}
             ADDR_WRAM1 => { self.wram[self.wram_idx][a] = val }
             ADDR_ECHO_RAM => { self.write(get_echo_ram_addr(a) as u16, val) }
-
-            ADDR_OAM => {
-                if matches!(mode,  MODE_HBLANK | MODE_VBLANK) {
-                    self.ppu.oam[a] = val;
-                } else {
-                    println!("iOAM access in {}", mode);
-                }
-            }
-
+            ADDR_OAM => { self.ppu.oam[a] = val }
             ADDR_UNUSABLE => {}
             ADDR_HRAM => { self.hram[a] = val}
             ADDR_IO_REGS => { self.write_reg(addr, val) }
@@ -137,8 +149,6 @@ impl Mmu {
     }
 
     fn read_reg(&self, addr: usize) -> u8 {
-        // pub(crate) const IO_WAVE_RAM: URange = 0xFF30..=0xFF3F;
-
         match addr {
             IO_JOYPAD => self.joypad.read(),
             IO_SB => self.serial.sb,
@@ -149,29 +159,29 @@ impl Mmu {
             IO_TAC => self.timer.tac.read(),
             IO_IF => self.iflag.read(),
             IO_IE => self.ienable.read(),
-            // IO_NR10 => {}
-            // IO_NR11 => {}
-            // IO_NR12 => {}
-            // IO_NR13 => {}
-            // IO_NR14 => {}
-            // IO_NR21 => {}
-            // IO_NR22 => {}
-            // IO_NR23 => {}
-            // IO_NR24 => {}
-            // IO_NR30 => {}
-            // IO_NR31 => {}
-            // IO_NR32 => {}
-            // IO_NR33 => {}
-            // IO_NR34 => {}
-            // IO_NR41 => {}
-            // IO_NR42 => {}
-            // IO_NR43 => {}
-            // IO_NR44 => {}
-            // IO_NR50 => {}
-            // IO_NR51 => {}
-            // IO_NR52 => {}
-            // IO_PCM12 => {}
-            // IO_PCM34 => {}
+
+            IO_NR10 => self.apu.ch1.nx0.read(),
+            IO_NR11 => self.apu.ch1.nx1.read(),
+            IO_NR12 => self.apu.ch1.nx2.read(),
+            IO_NR13 => self.apu.ch1.nx3.period_low,
+            IO_NR14 => self.apu.ch1.nx4.read(),
+            IO_NR21 => self.apu.ch2.nx1.read(),
+            IO_NR22 => self.apu.ch2.nx2.read(),
+            IO_NR23 => self.apu.ch2.nx3.period_low,
+            IO_NR24 => self.apu.ch2.nx4.read(),
+            IO_NR30 => self.apu.ch3.n30.read(),
+            IO_NR31 => self.apu.ch3.n31.length_period,
+            IO_NR32 => self.apu.ch3.n32.read(),
+            IO_NR33 => self.apu.ch3.n33.period_low,
+            IO_NR34 => self.apu.ch3.n34.read(),
+            IO_NR41 => self.apu.ch4.n41.read(),
+            IO_NR42 => self.apu.ch4.n42.read(),
+            IO_NR43 => self.apu.ch4.read_n43(),
+            IO_NR44 => self.apu.ch4.n44.read(),
+            IO_NR50 => self.apu.nr50.read(),
+            IO_NR51 => self.apu.nr51.read(),
+            IO_NR52 => self.apu.nr52.read(),
+
             IO_LCDC => self.ppu.fetcher.lcdc.read(),
             IO_STAT => self.ppu.stat.read(),
             IO_SCY => self.ppu.fetcher.scy,
@@ -188,6 +198,7 @@ impl Mmu {
             IO_OBPI => self.obpi.read(),
             IO_OBPD => self.ppu.obj_palette[self.obpi.addr as usize],
             IO_OPRI => self.opri,
+
             IO_SVBK => self.wram_idx as u8,
             IO_VBK => self.vram_idx as u8,
             // IO_HDMA1 => {}
@@ -207,102 +218,106 @@ impl Mmu {
     /// corresponding to the register if any.
     ///
     /// Writes to read-only registers(or register fields) are ignored.
-    fn write_reg(&mut self, addr: usize, val: u8) {
-        // Set value but keep masked bits preserved(if mask present).
+    fn write_reg(&mut self, addr: usize, v: u8) {
+        /// Set value but keep the masked bits preserved.
         macro_rules! set {
             ($target:expr, $val:expr, $keep_mask:expr) => {{
                 let combined = ($target.read() & $keep_mask) | ($val & !$keep_mask);
                 $target.write(combined);
             }};
-            ($target:expr, $val:expr) => {
-                $target.write($val)
-            };
         }
 
         // pub(crate) const IO_WAVE_RAM: URange = 0xFF30..=0xFF3F;
         // Verify written data and perform the action.
         match addr {
             IO_JOYPAD => {
-                set!(self.joypad, val, mask(4));
+                set!(self.joypad, v, mask(4));
                 self.update_joypad(self.dpad, self.buttons);
             }
-            IO_SB => self.serial.sb = val,
-            IO_SC => set!(self.serial.sc, val, mask(5) << 2),
-            IO_DIV => self.timer.set_div(val),
-            IO_TIMA => self.timer.tima = val,
-            IO_TMA => self.timer.tma = val,
-            IO_TAC => self.timer.tac.write(val),
-            IO_IF => set!(self.iflag, val, !mask(5)),
-            IO_IE => set!(self.ienable, val, !mask(5)),
-            // IO_NR10 => { = val}
-            // IO_NR11 => { = val}
-            // IO_NR12 => { = val}
-            // IO_NR13 => { = val}
-            // IO_NR14 => { = val}
-            // IO_NR21 => { = val}
-            // IO_NR22 => { = val}
-            // IO_NR23 => { = val}
-            // IO_NR24 => { = val}
-            // IO_NR30 => { = val}
-            // IO_NR31 => { = val}
-            // IO_NR32 => { = val}
-            // IO_NR33 => { = val}
-            // IO_NR34 => { = val}
-            // IO_NR41 => { = val}
-            // IO_NR42 => { = val}
-            // IO_NR43 => { = val}
-            // IO_NR44 => { = val}
-            // IO_NR50 => { = val}
-            // IO_NR51 => { = val}
-            // IO_NR52 => set!(self.audio.nr52, val, mask(7)),
-            IO_PCM12 => (),
-            IO_PCM34 => (),
-            IO_LCDC => set!(self.ppu.fetcher.lcdc, val),
-            IO_STAT => set!(self.ppu.stat, val, mask(3)),
-            IO_SCY => self.ppu.fetcher.scy = val,
-            IO_SCX => self.ppu.fetcher.scx = val,
+
+            IO_SB => self.serial.sb = v,
+            IO_SC => set!(self.serial.sc, v, mask(5) << 2),
+            IO_DIV => self.timer.set_div(v),
+            IO_TIMA => self.timer.tima = v,
+            IO_TMA => self.timer.tma = v,
+            IO_TAC => self.timer.tac.write(v),
+            IO_IF => set!(self.iflag, v, !mask(5)),
+            IO_IE => set!(self.ienable, v, !mask(5)),
+
+            IO_NR10 => set!(self.apu.ch1.nx0, v, 1 << 7),
+            IO_NR11 => self.apu.ch1.nx1.write(v),
+            IO_NR12 => self.apu.ch1.nx2.write(v),
+            IO_NR13 => self.apu.ch1.nx3.period_low = v,
+            IO_NR14 => set!(self.apu.ch1.nx4, v, mask(3) << 3),
+
+            IO_NR21 => self.apu.ch2.nx1.write(v),
+            IO_NR22 => self.apu.ch2.nx2.write(v),
+            IO_NR23 => self.apu.ch2.nx3.period_low = v,
+            IO_NR24 => set!(self.apu.ch2.nx4, v, mask(3) << 3),
+
+            IO_NR30 => set!(self.apu.ch3.n30, v, mask(7)),
+            IO_NR31 => self.apu.ch3.n31.length_period = v,
+            IO_NR32 => set!(self.apu.ch3.n32, v, 1 << 7 | mask(5)),
+            IO_NR33 => self.apu.ch3.n33.period_low = v,
+            IO_NR34 => set!(self.apu.ch3.n34, v, mask(3) << 3),
+
+            IO_NR41 => set!(self.apu.ch4.n41, v, mask(2) << 6),
+            IO_NR42 => self.apu.ch4.n42.write(v),
+            IO_NR43 => self.apu.ch4.write_n43(v),
+            IO_NR44 => set!(self.apu.ch4.n44, v, mask(6)),
+
+            IO_NR50 => self.apu.nr50.write(v),
+            IO_NR51 => self.apu.nr51.write(v),
+            IO_NR52 => set!(self.apu.nr52, v, mask(7)),
+
+            IO_LCDC => self.ppu.fetcher.lcdc.write(v),
+            IO_STAT => set!(self.ppu.stat, v, mask(3)),
+            IO_SCY => self.ppu.fetcher.scy = v,
+            IO_SCX => self.ppu.fetcher.scx = v,
             IO_LY => (),
-            IO_LYC => self.ppu.lyc = val,
-            IO_WY => self.ppu.fetcher.wy = val,
-            IO_WX => self.ppu.fetcher.wx = val,
-            IO_BGP => self.ppu.bgp = val,
-            IO_OBP0 => self.ppu.obp0 = val,
-            IO_OBP1 => self.ppu.obp1 = val,
-            IO_BGPI => set!(self.bgpi, val),
-            IO_OBPI => self.obpi.write(val),
+            IO_LYC => self.ppu.lyc = v,
+            IO_WY => self.ppu.fetcher.wy = v,
+            IO_WX => self.ppu.fetcher.wx = v,
+            IO_BGP => self.ppu.bgp = v,
+            IO_OBP0 => self.ppu.obp0 = v,
+            IO_OBP1 => self.ppu.obp1 = v,
+            IO_BGPI => self.bgpi.write(v),
+            IO_OBPI => self.obpi.write(v),
 
             // CGB paletes are locked during when PPU is drawing(Mode-3).
             IO_BGPD if self.get_mode() != MODE_DRAW => {
-                self.ppu.bg_palette[self.bgpi.addr as usize] = val;
+                self.ppu.bg_palette[self.bgpi.addr as usize] = v;
                 if self.bgpi.auto_inc == 1 {
                     self.bgpi.addr = (self.bgpi.addr + 1) & mask(6);
                 }
             }
             IO_OBPD if self.get_mode() != MODE_DRAW => {
-                self.ppu.obj_palette[self.obpi.addr as usize] = val;
+                self.ppu.obj_palette[self.obpi.addr as usize] = v;
                 if self.obpi.auto_inc == 1 {
                     self.obpi.addr = (self.obpi.addr + 1) & mask(6);
                 }
             }
 
-            IO_OPRI => self.opri = val & 1,
-            IO_SVBK if self.is_2x => {
-                if val == 0 {
-                    self.wram_idx = 1;
-                } else {
-                    self.wram_idx = (val & mask(3)) as usize;
+            IO_OPRI => self.opri = v & 1,
+            IO_SVBK => {
+                if self.is_2x {
+                    self.wram_idx = if v == 0 { 1 } else { (v & mask(3)) as usize };
                 }
             }
-            IO_VBK if self.is_2x => self.vram_idx = (val as usize) & 1,
+            IO_VBK => {
+                if self.is_2x {
+                    self.vram_idx = (v as usize) & 1
+                }
+            }
 
             // IO_HDMA1 => { = val}
             // IO_HDMA2 => { = val}
             // IO_HDMA3 => { = val}
             // IO_HDMA4 => { = val}
             // IO_HDMA5 => { = val}
-            IO_DMA => self.do_dma(val),
-            IO_KEY1 => set!(self.key1, val, !mask(1)),
-            IO_RP => set!(self.rp, val, 1 << 1),
+            IO_DMA => self.do_dma(v),
+            IO_KEY1 => set!(self.key1, v, !mask(1)),
+            IO_RP => set!(self.rp, v, 1 << 1),
 
             _ => (),
         }
@@ -352,36 +367,6 @@ impl Mmu {
 
         for (i, _) in ADDR_OAM.enumerate() {
             self.ppu.oam[i] = self.read((src + i) as u16);
-        }
-    }
-}
-
-impl Default for Mmu {
-    fn default() -> Self {
-        Self {
-            is_2x: false,
-            cart: Default::default(),
-
-            ppu: Ppu::new(),
-            timer: Timer::new(),
-            serial: Serial::new(),
-
-            wram: [[0; SIZE_WRAM_BANK]; WRAM_BANKS],
-            hram: [0; SIZE_HRAM],
-            ienable: Default::default(),
-            iflag: Default::default(),
-            key1: Default::default(),
-            joypad: Default::default(),
-            bgpi: Default::default(),
-            obpi: Default::default(),
-            wram_idx: 1,
-            vram_idx: 0,
-            opri: 0,
-            dma: 0,
-            rp: Rp::new(0b10),
-
-            dpad: Default::default(),
-            buttons: Default::default(),
         }
     }
 }

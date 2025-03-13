@@ -48,7 +48,7 @@ bit_fields! {
     pub(crate) struct LcdCtrl<u8> {
         /// In non-CGB mode this overrides win_enable
         /// and has meaning `BG_and_window_enable`.
-        bg_win_priotity:1,
+        bg_win_priotity: 1,
         obj_enable: 1,
         obj_size: 1,
         bg_tile_map: 1,
@@ -110,6 +110,18 @@ bit_fields! {
     }
 }
 
+impl IntrBits {
+    pub(crate) fn masked(self, mask: Self) -> Self {
+        Self {
+            vblank: self.vblank & mask.vblank,
+            stat: self.stat & mask.stat,
+            timer: self.timer & mask.timer,
+            serial: self.serial & mask.serial,
+            joypad: self.joypad & mask.joypad,
+        }
+    }
+}
+
 bit_fields! {
     /// Dual-speed(for CGB) speed switch register(KEY1).
     pub(crate) struct Key1<u8> {
@@ -120,18 +132,32 @@ bit_fields! {
 }
 
 bit_fields! {
-    pub(crate) struct AudioCtrl<u8> {
-        ch1: 1,
-        ch2: 1,
-        ch3: 1,
-        ch4: 1,
+    pub(crate) struct Rp<u8> {
+        on: 1,
+        fixed: 1,
+        _1: 4,
+        read_en: 2,
+    }
+}
+
+// Audio control registers
+// Audio registers which do not follow the NRxy convenction
+// have their specialized type.
+// --------------------------------------------------------
+
+bit_fields! {
+    pub(crate) struct AudioNr52<u8> {
+        ch1_on: 1,
+        ch2_on: 1,
+        ch3_on: 1,
+        ch4_on: 1,
         _0: 3,
         enable: 1,
     }
 }
 
 bit_fields! {
-    pub(crate) struct AudioPaning<u8> {
+    pub(crate) struct AudioNr51<u8> {
         ch1_right: 1,
         ch2_right: 1,
         ch3_right: 1,
@@ -144,7 +170,7 @@ bit_fields! {
 }
 
 bit_fields! {
-    pub(crate) struct AudioVinNVol<u8> {
+    pub(crate) struct AudioNr50<u8> {
         vol_right: 3,
         vin_right: 1,
         vol_left: 3,
@@ -153,10 +179,66 @@ bit_fields! {
 }
 
 bit_fields! {
-    pub(crate) struct Rp<u8> {
-        on: 1,
-        fixed: 1,
-        _1: 4,
-        read_en: 2,
+    pub(crate) struct AudioNx0<u8> {
+        shift_step: 3,
+        direction: 1,
+        pace: 3,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioNx1<u8> {
+        length_period: 6,
+        wave_duty: 2,
+    }
+}
+
+bit_fields! {
+    #[derive(Debug)]
+    pub(crate) struct AudioNx2<u8> {
+        pace: 3,
+        direction: 2,
+        initial_volume: 4,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct AudioNx3 {
+    pub(crate) period_low: u8,
+}
+
+bit_fields! {
+    pub(crate) struct AudioNx4<u8> {
+        period_high: 3,
+        _0: 3,
+        length_timer_enable: 1,
+        trigger: 1,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioN30<u8> {
+        _0: 7,
+        dac_on: 1,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct AudioN31 {
+    pub(crate) length_period: u8,
+}
+
+bit_fields! {
+    pub(crate) struct AudioN32<u8> {
+        _0: 5,
+        output_level: 2,
+    }
+}
+
+bit_fields! {
+    pub(crate) struct AudioN43<u8> {
+        clock_divider: 3,
+        lfsr_width: 1,
+        clock_shift: 4,
     }
 }

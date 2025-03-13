@@ -1,4 +1,4 @@
-//! Collection of constants and information used throughout the emulator.
+//! Collection of constants used throughout the emulator.
 
 type URange = std::ops::RangeInclusive<usize>;
 
@@ -10,7 +10,7 @@ pub(crate) const KB: usize = 1 << 10;
 pub(crate) const FREQUENCY: u32 = 1 << 22; // ~4.19 MHz
 pub(crate) const FREQUENCY_2X: u32 = 1 << 23; // ~8.38 Mhz
 /// Time for which CPU remains stalled after a speed-switch.
-pub(crate) const SPEED_SWITCH_MCYCLES: u16 = 100; //2050;
+// pub(crate) const SPEED_SWITCH_MCYCLES: u16 = 2050;
 
 // Memory system mapping, address and size information.
 // --------------------------------------------------------
@@ -22,6 +22,7 @@ pub(crate) const SIZE_WRAM_BANK: usize = 4 * KB;
 pub(crate) const SIZE_OAM: usize = 160;
 // pub(crate) const SIZE_IO_REGS: usize = 128;
 pub(crate) const SIZE_HRAM: usize = 127;
+pub(crate) const SIZE_AUDIO_WAVE_RAM: usize = 16;
 
 // Switchable banks count.
 pub(crate) const VRAM_BANKS: usize = 2;
@@ -50,7 +51,7 @@ pub(crate) const SCREEN_RESOLUTION: (usize, usize) = (160, 144);
 
 // Start address for different VRAM tile data and map areas
 pub(crate) const TILE_BLOCK0: usize = 0x8000;
-pub(crate) const TILE_BLOCK1: usize = 0x8800;
+// pub(crate) const TILE_BLOCK1: usize = 0x8800;
 pub(crate) const TILE_BLOCK2: usize = 0x9000;
 pub(crate) const TILE_MAP0: usize = 0x9800;
 pub(crate) const TILE_MAP1: usize = 0x9C00;
@@ -67,12 +68,6 @@ pub(crate) const MODE_HBLANK: u8 = 0;
 pub(crate) const MODE_VBLANK: u8 = 1;
 pub(crate) const MODE_SCAN: u8 = 2;
 pub(crate) const MODE_DRAW: u8 = 3;
-
-/// Dots for PPU modes: (Scan + Draw + HBlank)
-pub(crate) const PPU_HSCAN_DOTS: u16 = 456;
-pub(crate) const PPU_LINE_PIXELS: u8 = SCREEN_RESOLUTION.0 as u8;
-pub(crate) const PPU_DRAW_LINES: u8 = SCREEN_RESOLUTION.1 as u8;
-pub(crate) const PPU_VBLANK_LINES: u8 = 10;
 
 // IO register addresses.
 //---------------------------------------------------------
@@ -94,42 +89,35 @@ pub(crate) const IO_IF: usize = 0xFF0F;
 pub(crate) const IO_IE: usize = 0xFFFF;
 
 // Audio channel 1
-// pub(crate) const IO_NR10: usize = 0xFF10;
-// pub(crate) const IO_NR11: usize = 0xFF11;
-// pub(crate) const IO_NR12: usize = 0xFF12;
-// pub(crate) const IO_NR13: usize = 0xFF13;
-// pub(crate) const IO_NR14: usize = 0xFF14;
+pub(crate) const IO_NR10: usize = 0xFF10;
+pub(crate) const IO_NR11: usize = 0xFF11;
+pub(crate) const IO_NR12: usize = 0xFF12;
+pub(crate) const IO_NR13: usize = 0xFF13;
+pub(crate) const IO_NR14: usize = 0xFF14;
 
 // Audio channel 2
-// pub(crate) const IO_NR21: usize = 0xFF16;
-// pub(crate) const IO_NR22: usize = 0xFF17;
-// pub(crate) const IO_NR23: usize = 0xFF18;
-// pub(crate) const IO_NR24: usize = 0xFF19;
+pub(crate) const IO_NR21: usize = 0xFF16;
+pub(crate) const IO_NR22: usize = 0xFF17;
+pub(crate) const IO_NR23: usize = 0xFF18;
+pub(crate) const IO_NR24: usize = 0xFF19;
 
 // Audio channel 3
-// pub(crate) const IO_NR30: usize = 0xFF1A;
-// pub(crate) const IO_NR31: usize = 0xFF1B;
-// pub(crate) const IO_NR32: usize = 0xFF1C;
-// pub(crate) const IO_NR33: usize = 0xFF1D;
-// pub(crate) const IO_NR34: usize = 0xFF1E;
+pub(crate) const IO_NR30: usize = 0xFF1A;
+pub(crate) const IO_NR31: usize = 0xFF1B;
+pub(crate) const IO_NR32: usize = 0xFF1C;
+pub(crate) const IO_NR33: usize = 0xFF1D;
+pub(crate) const IO_NR34: usize = 0xFF1E;
 
 // Audio channel 4
-// pub(crate) const IO_NR41: usize = 0xFF20;
-// pub(crate) const IO_NR42: usize = 0xFF21;
-// pub(crate) const IO_NR43: usize = 0xFF22;
-// pub(crate) const IO_NR44: usize = 0xFF23;
+pub(crate) const IO_NR41: usize = 0xFF20;
+pub(crate) const IO_NR42: usize = 0xFF21;
+pub(crate) const IO_NR43: usize = 0xFF22;
+pub(crate) const IO_NR44: usize = 0xFF23;
 
 // Audio channel 5(global)
-// pub(crate) const IO_NR50: usize = 0xFF24;
-// pub(crate) const IO_NR51: usize = 0xFF25;
+pub(crate) const IO_NR50: usize = 0xFF24;
+pub(crate) const IO_NR51: usize = 0xFF25;
 pub(crate) const IO_NR52: usize = 0xFF26;
-
-// Digital audio channels
-pub(crate) const IO_PCM12: usize = 0xFF76;
-pub(crate) const IO_PCM34: usize = 0xFF77;
-
-/// Audio wave pattern, 16-bytes.
-// pub(crate) const IO_WAVE_RAM: URange = 0xFF30..=0xFF3F;
 
 // LCD: control, status, position and scrolling
 pub(crate) const IO_LCDC: usize = 0xFF40;
@@ -153,6 +141,8 @@ pub(crate) const IO_OBPI: usize = 0xFF6A;
 pub(crate) const IO_OBPD: usize = 0xFF6B;
 pub(crate) const IO_OPRI: usize = 0xFF6C;
 
+pub(crate) const ADDR_AUDIO_WAVE_RAM: URange = 0xFF30..=0xFF3F;
+
 /// Select WRAM bank: 1-7.
 pub(crate) const IO_SVBK: usize = 0xFF70;
 
@@ -172,7 +162,7 @@ pub(crate) const IO_DMA: usize = 0xFF46;
 /// Speed switch for CGB dual-speed mode.
 pub(crate) const IO_KEY1: usize = 0xFF4D;
 
-// IR communications port
+/// IR communications port
 pub(crate) const IO_RP: usize = 0xFF56;
 
 // Cartridge header layout information.
@@ -191,9 +181,7 @@ pub(crate) const CART_HEADER_CSUM: usize = 0x14D;
 pub(crate) const CART_GLOBAL_CSUM: URange = 0x14E..=0x14F;
 
 /// In real gameboys the value of logo in header should be equal to
-/// this value, otherwise, the game will not run.  
-/// In our emulator we do not enforce any such constraints,
-/// but we may print a message indicating the same.
+/// this value, otherwise, the game will not run on real hardware.
 pub(crate) const CART_LOGO_VAL: [u8; 48] = [
     0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
     0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E, 0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
@@ -204,8 +192,6 @@ pub(crate) const CART_LOGO_VAL: [u8; 48] = [
 pub(crate) const CART_CGB_ONLY: u8 = 0xC0;
 /// Supports CGB mode but is backwards compatible with monochrome.
 pub(crate) const CART_CGB_TOO: u8 = 0x80;
-/// Supports SGB functions.
-pub(crate) const CART_SGB_TOO: u8 = 0x03;
 
 // Interrupt and RST jump targets.
 //---------------------------------------------------------

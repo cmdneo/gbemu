@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-macroquad = "0.4"
+macroquad = "^0.4"
+cpal = "^0.15"
+
+[profile.dev]
+opt-level = 1
