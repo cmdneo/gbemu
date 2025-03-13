@@ -1,7 +1,8 @@
 use crate::{frame, regs};
 
 pub enum UserMsg {
-    Buttons(ButtonState),
+    UpdateButtons(ButtonState),
+    CyclePalette,
     ClearFrame(frame::Color),
     GetFrame,
     GetFrequency,
@@ -17,8 +18,6 @@ pub enum EmulatorMsg {
     NewFrame(Box<frame::Frame>),
     Frequency(f64),
     ShuttingDown,
-    Stop,
-    WakeUp,
 }
 
 /// A glue type for sending button states from user to emulator.
@@ -55,3 +54,9 @@ impl ButtonState {
         (dpad, btns)
     }
 }
+
+// /// Some emulator state information.
+// #[derive(Default, Clone, Copy)]
+// pub struct EmulatorInfo {
+//     channel_averages: [f32; 4],
+// }
