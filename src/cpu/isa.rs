@@ -19,8 +19,8 @@ pub(crate) struct Instr {
     pub(crate) op: Opcode,
     pub(crate) op1: Operand,
     pub(crate) op2: Operand,
-    pub(crate) mcycles: u16,
-    pub(crate) branch_mcycles: u16,
+    pub(crate) mcycles: u8,
+    pub(crate) branch_mcycles: u8,
 }
 
 impl Default for Instr {
