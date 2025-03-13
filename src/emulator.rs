@@ -166,7 +166,8 @@ impl Emulator {
             }
 
             UserMsg::CyclePalette => {
-                todo!()
+                self.cpu.mmu.ppu.cycle_palette(1);
+                true
             }
 
             UserMsg::GetFrame => {

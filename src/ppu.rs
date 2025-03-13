@@ -1,9 +1,10 @@
-mod fetcher;
+pub(crate) mod fetcher;
+mod palettes;
 
 use fetcher::{LineFetcher, OamEntry, Pixel};
 
 use crate::{
-    frame::{self, Color, Frame},
+    frame::{Color, Frame},
     info::*,
     regs::{CgbPaletteColor, IntrBits, LcdStat},
 };
@@ -23,6 +24,8 @@ pub(crate) struct Ppu {
     pub(crate) obp0: u8,
     pub(crate) obp1: u8,
 
+    /// ID for mapping monochrome DMG colors to RGB colors.
+    dmg_palette_id: usize,
     /// Current PPU mode updates to it are carried to STAT register.
     mode: PpuMode,
     /// Frame containing an RGB-24 representation of the screen pixels.
@@ -30,10 +33,16 @@ pub(crate) struct Ppu {
     /// Amount of dots left, which determines how much to advance.
     /// In normal mode     : 4 dots per M-cycle.
     /// In dual-speed mode : 2 dots per M-cycle.
-    dots_left: u16,
+    dots_left: u32,
     /// Number of dots consumed for the current scan-line `LY`.
-    dots_in_line: u16,
+    dots_in_line: u32,
+    /// STAT interrupt is triggered when this goes from low to high
+    stat_intr_line: bool,
 }
+
+const PPU_DRAW_LINES: u32 = SCREEN_RESOLUTION.1 as u32;
+const PPU_HSCAN_DOTS: u32 = 456;
+const PPU_VBLANK_LINES: u32 = 10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -58,19 +67,18 @@ impl Ppu {
             bgp: 0,
             obp0: 0,
             obp1: 0,
-            frame: Default::default(),
+
+            dmg_palette_id: palettes::DEFAULT_MONOCHROME,
             mode: PpuMode::Scan,
+            frame: Default::default(),
             dots_in_line: 0,
             dots_left: 0,
+            stat_intr_line: false,
         }
     }
 
-    pub(crate) fn fill_frame(&self, frame: &mut frame::Frame) {
-        *frame = self.frame.clone();
-    }
-
     /// Run for `dots` cycles, `dots` must be an even number.
-    pub(crate) fn tick(&mut self, dots: u16) -> IntrBits {
+    pub(crate) fn tick(&mut self, dots: u32) -> IntrBits {
         // Reset and do nothing if PPU is disabled.
         if self.fetcher.lcdc.ppu_enable == 0 {
             self.reset();
@@ -96,6 +104,23 @@ impl Ppu {
         ret
     }
 
+    pub(crate) fn cycle_palette(&mut self, direction: i8) {
+        assert!(direction != 0, "direction must be either +ve or -ve");
+
+        self.dmg_palette_id = self
+            .dmg_palette_id
+            .wrapping_add_signed(direction.signum() as isize)
+            % palettes::DMG_PALETTES.len();
+    }
+
+    pub(crate) fn copy_frame(&self, frame: &mut Frame) {
+        *frame = self.frame.clone();
+    }
+
+    pub(crate) fn paint_frame(&mut self, color: Color) {
+        self.frame.set_all(color);
+    }
+
     fn reset(&mut self) {
         self.stat.ppu_mode = MODE_HBLANK;
         self.ly = 0;
@@ -106,29 +131,32 @@ impl Ppu {
     fn step_scan(&mut self) -> PpuMode {
         // 2 dots per entry scan. Lasts 80 dots for scanning 40 entries.
         let idx = self.dots_in_line as usize / 2;
+        self.eat_dots(2);
+
         match idx {
             0 => self.fetcher.new_line(self.ly),
             OAM_ENTRIES => return PpuMode::Draw,
-            _ => (),
+            _ => return PpuMode::Scan,
         }
 
-        self.eat_dots(2);
-        let obj = get_oam_entry(&self.oam, idx);
-
-        // If the spte buffer is not full, then a sprite is added to it if:
+        // If the sprite buffer is not full, then a sprite is added to it if:
         // It is on the scan-line as per its Y-pos and objects are enabled.
         // "Ypos - 16" is sprite top position on screen.
         // A sprite can have size: 8x8 or 8x16(tall object mode).
-        let height = if self.fetcher.lcdc.obj_size == 1 {
-            16
-        } else {
-            8
-        };
-        if self.fetcher.objects.len() < MAX_OBJ_PER_LINE
-            && obj.ypos <= self.ly + 16
-            && self.ly + 16 < obj.ypos + height
-        {
-            self.fetcher.objects.push(obj);
+        for i in 0..OAM_ENTRIES {
+            let obj = get_oam_entry(&self.oam, i);
+
+            let height = if self.fetcher.lcdc.obj_size == 1 {
+                16
+            } else {
+                8
+            };
+            if self.fetcher.objects.len() < MAX_OBJ_PER_LINE
+                && obj.ypos <= self.ly + 16
+                && self.ly + 16 < obj.ypos + height
+            {
+                self.fetcher.objects.push(obj);
+            }
         }
 
         PpuMode::Scan
@@ -143,6 +171,7 @@ impl Ppu {
             for i in 0..SCREEN_RESOLUTION.0 {
                 let px = self.fetcher.screen_line[i];
                 let color = self.pixel_to_color(px);
+
                 self.frame.set(i, self.ly as usize, color);
             }
 
@@ -156,7 +185,7 @@ impl Ppu {
         // If current scan-line finishes and it was last draw line then
         // goto VBlank, if not last line then just go back to OAM-Scan mode.
         if self.eat_dots(self.dots_left) {
-            if self.ly == PPU_DRAW_LINES {
+            if self.ly as u32 == PPU_DRAW_LINES {
                 PpuMode::VBlank
             } else {
                 PpuMode::Scan
@@ -169,7 +198,7 @@ impl Ppu {
     fn step_vblank(&mut self) -> PpuMode {
         self.eat_dots(self.dots_left);
 
-        if self.ly == PPU_DRAW_LINES + PPU_VBLANK_LINES {
+        if self.ly as u32 == PPU_DRAW_LINES + PPU_VBLANK_LINES {
             self.dots_in_line = 0;
             self.ly = 0;
             PpuMode::Scan // Start next frame.
@@ -183,21 +212,17 @@ impl Ppu {
     fn update_lcd_state(&mut self, new_mode: PpuMode) -> IntrBits {
         let mut iflag = IntrBits::new(0);
 
-        // For interrupt on condition: LYC == LY.
-        // It is trigerred at the begining of a scan line only.
-        if self.dots_in_line == 0 && self.stat.lyc_int == 1 && self.lyc == self.ly {
+        // On entring VBLANK mode interrupt.
+        if new_mode != self.mode && new_mode == PpuMode::VBlank {
+            iflag.vblank = 1;
+        }
+
+        // IF STAT interrupt source line goes from low-to-high then interrupt.
+        let new = calc_stat_interrupt(self.stat, self.mode, self.lyc, self.ly);
+        if !self.stat_intr_line && new {
             iflag.stat = 1;
         }
-        // If mode changes and interrupt condition is met then interrupt.
-        if new_mode != self.mode {
-            iflag.vblank = matches!(new_mode, PpuMode::VBlank) as u8;
-            iflag.stat = match self.mode {
-                PpuMode::HBlank if self.stat.mode0 == 1 => 1,
-                PpuMode::VBlank if self.stat.mode1 == 1 => 1,
-                PpuMode::Scan if self.stat.mode2 == 1 => 1,
-                _ => iflag.stat,
-            };
-        }
+        self.stat_intr_line = new;
 
         self.stat.ppu_mode = new_mode as u8;
         self.stat.ly_eq_lyc = (self.lyc == self.ly) as u8;
@@ -207,7 +232,7 @@ impl Ppu {
 
     /// Consume as much dots as possible from `dots_left` without overflowing
     /// into the next scan-line. Return true if current scan-line finished.
-    fn eat_dots(&mut self, dots: u16) -> bool {
+    fn eat_dots(&mut self, dots: u32) -> bool {
         assert!(dots <= PPU_HSCAN_DOTS);
         assert!(dots <= self.dots_left);
         let r = self.dots_in_line + dots;
@@ -225,74 +250,72 @@ impl Ppu {
         }
     }
 
-    // Pixel to color synthesis stuff
+    // Pixel to color synthesis
     //---------------------------------------------------------------
     fn pixel_to_color(&self, px: Pixel) -> Color {
-        // In non-CGB mode palette is taken from BGP/OBP0/OBP1 registers,
-        // where colors are stored according to color IDs as: [MSB] 33-22-11-00 [LSB]
-        let mono_color = |palette, color_id| (palette >> color_id * 2) & 0b11;
-
         if self.fetcher.is_2x {
             // Transparent[color=0] object pixels have already been
             // handeled by the fetcher during pixel mixing.
-            let palette = self.read_cgb_palette(px.is_obj, px.palette);
-            cgb_to_color(palette[px.color_id as usize])
+            let color = self.get_cgb_color(px.is_obj, px.color_id, px.palette);
+            cgb_to_color(color)
         } else {
-            let palette = if px.is_obj {
-                if px.palette == 0 {
-                    self.obp0
-                } else {
-                    self.obp1
-                }
-            } else {
-                self.bgp
+            let dmg_palette = &palettes::DMG_PALETTES[self.dmg_palette_id];
+            let (color_map, palette) = match (px.is_obj, px.palette) {
+                (true, 0) => (dmg_palette.obj0, self.obp0),
+                (true, 1) => (dmg_palette.obj1, self.obp1),
+                (false, 0) => (dmg_palette.bg, self.bgp),
+                _ => unreachable!(),
             };
 
-            let color = mono_color(palette, px.color_id);
-            mono_to_color(color)
+            // Monochrome palettes stores colors for colors-ID(xx) as:
+            // `[MSB] 33-22-11-00 [LSB]`
+            let color = (palette >> px.color_id * 2) & 0b11;
+            color_map[color as usize]
         }
     }
 
-    fn read_cgb_palette(&self, is_obj: bool, pal_index: u8) -> [u16; 4] {
-        let mut ret = [0u16; 4];
+    #[inline]
+    fn get_cgb_color(&self, is_obj: bool, color_id: u8, palette_index: u8) -> u16 {
+        debug_assert!(palette_index < 8);
+        debug_assert!(color_id < 4);
 
-        for (i, r) in ret.iter_mut().enumerate() {
-            // Each palette is of 8-bytes consisting of 4 colors of 2-bytes each.
-            let idx = (pal_index as usize) * 8 + i * 2;
+        // Each CGB-palette is of 8-bytes consisting of 4 colors of 2-bytes each.
+        let idx = (palette_index * 8 + color_id * 2) as usize;
 
-            *r = u16::from_le_bytes(if is_obj {
-                [self.obj_palette[idx], self.obj_palette[idx + 1]]
-            } else {
-                [self.bg_palette[idx], self.bg_palette[idx + 1]]
-            });
-        }
-
-        ret
+        u16::from_le_bytes(if is_obj {
+            [self.obj_palette[idx], self.obj_palette[idx + 1]]
+        } else {
+            [self.bg_palette[idx], self.bg_palette[idx + 1]]
+        })
     }
 }
 
+fn calc_stat_interrupt(stat: LcdStat, mode: PpuMode, lyc: u8, ly: u8) -> bool {
+    // Logically OR all STAT interrupt sources.
+    let ret = stat.lyc_int == 1 && lyc == ly;
+    match mode {
+        PpuMode::HBlank if stat.mode0 == 1 => true,
+        PpuMode::VBlank if stat.mode1 == 1 => true,
+        PpuMode::Scan if stat.mode2 == 1 => true,
+        _ => ret,
+    }
+}
+
+#[inline]
 fn get_oam_entry(oam: &[u8], idx: usize) -> OamEntry {
     let d = &oam[(idx * 4)..(idx * 4 + 4)];
     OamEntry::from_array([d[0], d[1], d[2], d[3]])
 }
 
 #[inline]
-fn mono_to_color(mono_color: u8) -> Color {
-    // Mono color is of 2 bits.
-    // Where in mono color: 3 in it means dark and 0 white.
-    const SCALE: u8 = 255 / 3;
-    let c = (3 - mono_color) * SCALE;
-    Color { r: c, g: c, b: c }
-}
-
-#[inline]
 fn cgb_to_color(cgb_color: u16) -> Color {
     // Each CGB color component of 5 bits.
-    const SCALE: u8 = 255 / 31;
+    let scale = |x| ((x << 3) | (x >> 2)) as u8;
+
     let c = CgbPaletteColor::new(cgb_color);
     Color {
-        r: (c.red as u8) * SCALE,
-        g: (c.green as u8) * SCALE,
-        b: (c.blue as u8) * SCALE,
+        r: scale(c.red),
+        g: scale(c.green),
+        b: scale(c.blue),
     }
 }

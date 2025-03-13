@@ -1,3 +1,5 @@
+// mod ui;
+
 use std::{env::args, process::exit, sync::mpsc, thread};
 
 use gbemu::{ButtonState, Emulator, EmulatorMsg, UserMsg, SCREEN_SIZE};
@@ -58,10 +60,14 @@ async fn main() {
             break;
         }
 
-        let new_state = get_button_state();
+        if is_key_pressed(KeyCode::Space) {
+            user_tx.send(UserMsg::CyclePalette).unwrap();
+        }
+
+        let new_state = read_button_state();
         if new_state != btn_state {
             btn_state = new_state;
-            user_tx.send(UserMsg::Buttons(btn_state)).unwrap();
+            user_tx.send(UserMsg::UpdateButtons(btn_state)).unwrap();
         }
 
         // Get frame
@@ -103,7 +109,7 @@ async fn main() {
     handle.join().unwrap();
 }
 
-fn get_button_state() -> ButtonState {
+fn read_button_state() -> ButtonState {
     ButtonState {
         a: is_key_down(KeyCode::Z),
         b: is_key_down(KeyCode::X),
