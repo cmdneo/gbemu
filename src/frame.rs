@@ -15,6 +15,15 @@ pub struct Color {
 }
 
 impl Color {
+    pub const fn from_hexcode(hexcode: u32) -> Self {
+        let bs = hexcode.to_le_bytes();
+        Self {
+            r: bs[2],
+            g: bs[1],
+            b: bs[0],
+        }
+    }
+
     #[inline]
     pub fn to_f32_triple(self) -> (f32, f32, f32) {
         (
@@ -32,6 +41,14 @@ impl Frame {
 
     pub fn set(&mut self, x: usize, y: usize, color: Color) {
         self.pixels[y][x] = color;
+    }
+
+    pub fn set_all(&mut self, color: Color) {
+        for row in self.pixels.iter_mut() {
+            for cell in row.iter_mut() {
+                *cell = color;
+            }
+        }
     }
 }
 

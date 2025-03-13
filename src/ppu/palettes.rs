@@ -1,0 +1,97 @@
+use crate::Color;
+
+pub(crate) struct DmgPalette {
+    pub(crate) bg: [Color; 4],
+    pub(crate) obj0: [Color; 4],
+    pub(crate) obj1: [Color; 4],
+}
+
+pub(crate) const DEFAULT_MONOCHROME: usize = 5;
+
+pub(crate) const DMG_PALETTES: [DmgPalette; 12] = [
+    // Up
+    palette(
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+    ),
+    // A + Up
+    palette(
+        [0xFFFFFF, 0xFF8484, 0x943A3A, 0x000000],
+        [0xFFFFFF, 0x7BFF31, 0x008400, 0x000000],
+        [0xFFFFFF, 0x63A5FF, 0x0000FF, 0x000000],
+    ),
+    // B + Up
+    palette(
+        [0xFFE6C5, 0xCE9C84, 0x846B29, 0x5A3108],
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+    ),
+    // Left
+    palette(
+        [0xFFFFFF, 0x63A5FF, 0x0000FF, 0x000000],
+        [0xFFFFFF, 0xFF8484, 0x943A3A, 0x000000],
+        [0xFFFFFF, 0x7BFF31, 0x008400, 0x000000],
+    ),
+    // A + Left
+    palette(
+        [0xFFFFFF, 0x8C8CDE, 0x52528C, 0x000000],
+        [0xFFFFFF, 0xFF8484, 0x943A3A, 0x000000],
+        [0xFFFFFF, 0xFFAD63, 0x843100, 0x000000],
+    ),
+    // B + Left (default monochrome)
+    palette(
+        [0xFFFFFF, 0xA5A5A5, 0x525252, 0x000000],
+        [0xFFFFFF, 0xA5A5A5, 0x525252, 0x000000],
+        [0xFFFFFF, 0xA5A5A5, 0x525252, 0x000000],
+    ),
+    // Down
+    palette(
+        [0xFFFFA5, 0xFF9494, 0x9494FF, 0x000000],
+        [0xFFFFA5, 0xFF9494, 0x9494FF, 0x000000],
+        [0xFFFFA5, 0xFF9494, 0x9494FF, 0x000000],
+    ),
+    // A + Down
+    palette(
+        [0xFFFFFF, 0xFFFF00, 0xFF0000, 0x000000],
+        [0xFFFFFF, 0xFFFF00, 0xFF0000, 0x000000],
+        [0xFFFFFF, 0xFFFF00, 0xFF0000, 0x000000],
+    ),
+    // B + Down
+    palette(
+        [0xFFFFFF, 0xFFFF00, 0x7B4A00, 0x000000],
+        [0xFFFFFF, 0x63A5FF, 0x0000FF, 0x000000],
+        [0xFFFFFF, 0x7BFF31, 0x008400, 0x000000],
+    ),
+    // Right
+    palette(
+        [0xFFFFFF, 0x52FF00, 0xFF4200, 0x000000],
+        [0xFFFFFF, 0x52FF00, 0xFF4200, 0x000000],
+        [0xFFFFFF, 0x52FF00, 0xFF4200, 0x000000],
+    ),
+    // A + Right
+    palette(
+        [0xFFFFFF, 0x7BFF31, 0x0063C5, 0x000000],
+        [0xFFFFFF, 0xFF8484, 0x943A3A, 0x000000],
+        [0xFFFFFF, 0xFF8484, 0x943A3A, 0x000000],
+    ),
+    // B + Right
+    palette(
+        [0x000000, 0x008484, 0xFFDE00, 0xFFFFFF],
+        [0x000000, 0x008484, 0xFFDE00, 0xFFFFFF],
+        [0x000000, 0x008484, 0xFFDE00, 0xFFFFFF],
+    ),
+];
+
+const fn palette(hex_bg: [u32; 4], hex_obp0: [u32; 4], hex_obp1: [u32; 4]) -> DmgPalette {
+    DmgPalette {
+        bg: one_palette(hex_bg),
+        obj0: one_palette(hex_obp0),
+        obj1: one_palette(hex_obp1),
+    }
+}
+
+const fn one_palette(codes: [u32; 4]) -> [Color; 4] {
+    let cc = Color::from_hexcode;
+    [cc(codes[0]), cc(codes[1]), cc(codes[2]), cc(codes[3])]
+}
