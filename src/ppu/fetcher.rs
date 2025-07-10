@@ -49,6 +49,15 @@ pub(crate) struct LineFetcher {
     bg_tile: TileLine,
 }
 
+#[derive(Default)]
+enum FetcherState {
+    #[default]
+    GetTileId,
+    GetTileLow,
+    GetTileHigh,
+    PushPixels,
+}
+
 /// One processed pixel with information for constructing its color.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Pixel {
@@ -330,10 +339,10 @@ impl LineFetcher {
 
         // Tall objects are comprised of two consecutive tiles.
         // Upper part has even numbered tile-ID.
-        // When yflip is enabled the two tiles switch positions.
         if self.lcdc.obj_size == 1 {
-            let is_second = self.line + 16 - obj.ypos > 8;
+            let is_second = self.line + 16 >= 8 + obj.ypos;
 
+            // When yflip is enabled the two tiles switch positions.
             if is_second == ret.yflip {
                 ret.id &= !1; // Even
             } else {
@@ -405,15 +414,6 @@ bit_fields! {
         yflip: 1,
         priority: 1,
     }
-}
-
-#[derive(Default)]
-enum FetcherState {
-    #[default]
-    GetTileId,
-    GetTileLow,
-    GetTileHigh,
-    PushPixels,
 }
 
 #[derive(Default, Clone, Copy)]
