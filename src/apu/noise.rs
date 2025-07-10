@@ -74,10 +74,10 @@ impl NoiseChannel {
         }
 
         self.on = true;
-        self.envelope.setup(&self.n42);
+        self.envelope = parts::VolumeEnvelope::new(&self.n42);
 
         if !self.length_timer.is_active() {
-            self.length_timer.setup(false, self.n41.length_period);
+            self.length_timer = parts::LengthTimer::new(false, self.n41.length_period);
         }
     }
 

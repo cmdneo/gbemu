@@ -61,7 +61,7 @@ impl WaveChannel {
         self.divider.update_period(&self.n33, &self.n34);
 
         if !self.length_timer.is_active() {
-            self.length_timer.setup(true, self.n31.length_period);
+            self.length_timer = parts::LengthTimer::new(true, self.n31.length_period);
         }
     }
 

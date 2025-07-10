@@ -16,6 +16,7 @@ pub(crate) struct Timer {
     /// Internal 14-bit sys-clock incremented every M-cycle.
     sys_clock: u16,
     old_sys_clock: u16,
+    was_div_reset: bool,
     tima_overflowed: bool,
 }
 
@@ -26,16 +27,16 @@ impl Timer {
         Default::default()
     }
 
-    pub(crate) fn set_div(&mut self, _val: u8) {
-        // setting DIV resets it to 0.
+    pub(crate) fn reset_div(&mut self) {
         self.sys_clock = 0;
+        self.was_div_reset = true;
     }
 
     pub(crate) fn get_div(&self) -> u8 {
         (self.sys_clock >> 6) as u8
     }
 
-    /// Update timers for new `sys_clock` value.
+    /// Tick the timer, `mcycles` must be non-zero.
     /// Returns true if TIMER interrupt has been requested.
     pub(crate) fn tick(&mut self, mcycles: u32) -> bool {
         assert!(mcycles > 0);
@@ -44,9 +45,10 @@ impl Timer {
 
         // DIV is not INCREMENTED if it was RESET,
         // but we do process that old_sys_clock->0 as a tick.
-        let mcycles = if self.sys_clock != self.old_sys_clock {
+        let mcycles = if self.was_div_reset {
             intr = self.process_clock_tick();
             self.old_sys_clock = self.sys_clock;
+            self.was_div_reset = false;
             mcycles - 1
         } else {
             mcycles

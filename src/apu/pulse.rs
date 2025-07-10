@@ -77,10 +77,10 @@ impl PulseChannel {
 
         self.on = true;
         self.divider.update_period(&self.nx3, &self.nx4);
-        self.envelope.setup(&self.nx2);
+        self.envelope = parts::VolumeEnvelope::new(&self.nx2);
 
         if !self.length_timer.is_active() {
-            self.length_timer.setup(false, self.nx1.length_period);
+            self.length_timer = parts::LengthTimer::new(false, self.nx1.length_period);
         }
 
         if self.use_sweep {

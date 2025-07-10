@@ -7,17 +7,15 @@ pub(crate) const KB: usize = 1 << 10;
 
 // Timing parameters
 // --------------------------------------------------------
-pub(crate) const FREQUENCY: u32 = 1 << 22; // ~4.19 MHz
+pub const FREQUENCY: u32 = 1 << 22; // ~4.19 MHz
 pub(crate) const FREQUENCY_2X: u32 = 1 << 23; // ~8.38 Mhz
-/// Time for which CPU remains stalled after a speed-switch.
-// pub(crate) const SPEED_SWITCH_MCYCLES: u16 = 2050;
 
 // Memory system mapping, address and size information.
 // --------------------------------------------------------
 // Memory sizes
 pub(crate) const SIZE_ROM_BANK: usize = 16 * KB;
 pub(crate) const SIZE_VRAM_BANK: usize = 8 * KB;
-pub(crate) const SIZE_EXT_RAM: usize = 8 * KB;
+pub(crate) const SIZE_EXT_RAM_BANK: usize = 8 * KB;
 pub(crate) const SIZE_WRAM_BANK: usize = 4 * KB;
 pub(crate) const SIZE_OAM: usize = 160;
 // pub(crate) const SIZE_IO_REGS: usize = 128;
@@ -47,7 +45,7 @@ pub(crate) const ECHO_RAM_ADDR_MASK: usize = !(!0 << 13);
 
 // VRAM, OAM, PPU and graphics related information.
 // --------------------------------------------------------
-pub(crate) const SCREEN_RESOLUTION: (usize, usize) = (160, 144);
+pub const SCREEN_RESOLUTION: (usize, usize) = (160, 144);
 
 // Start address for different VRAM tile data and map areas
 pub(crate) const TILE_BLOCK0: usize = 0x8000;
@@ -57,7 +55,7 @@ pub(crate) const TILE_MAP0: usize = 0x9800;
 pub(crate) const TILE_MAP1: usize = 0x9C00;
 pub(crate) const TILE_SIZE: usize = 16;
 
-// 8 palettes, each having 4 colors, where each color is 2 bytes.
+// 8 palettes, each having 4 colors, where each color is of 2 bytes.
 pub(crate) const SIZE_CGB_PALETTE: usize = 64;
 
 pub(crate) const OAM_ENTRIES: usize = 40;
@@ -162,36 +160,32 @@ pub(crate) const IO_DMA: usize = 0xFF46;
 /// Speed switch for CGB dual-speed mode.
 pub(crate) const IO_KEY1: usize = 0xFF4D;
 
-/// IR communications port
-pub(crate) const IO_RP: usize = 0xFF56;
-
 // Cartridge header layout information.
 // Fields not relevant to the emulator implementation are not listed here.
 //---------------------------------------------------------
-pub(crate) const CART_HEADER: URange = 0x100..=0x14F;
+// pub(crate) const CART_HEADER: URange = 0x100..=0x14F;
 
-pub(crate) const CART_ENTRY: URange = 0x100..=0x103;
-pub(crate) const CART_LOGO: URange = 0x104..=0x133;
+// pub(crate) const CART_LOGO: URange = 0x104..=0x133;
 pub(crate) const CART_TITLE: URange = 0x134..=0x143;
 pub(crate) const CART_CGB_FLAG: usize = 0x143;
-pub(crate) const CART_SGB_FLAG: usize = 0x146;
-pub(crate) const CART_TYPE: usize = 0x147;
-pub(crate) const CART_RAM_SIZE: usize = 0x149;
-pub(crate) const CART_HEADER_CSUM: usize = 0x14D;
-pub(crate) const CART_GLOBAL_CSUM: URange = 0x14E..=0x14F;
+pub(crate) const CART_TYPE_FLAG: usize = 0x147;
+pub(crate) const CART_ROM_FLAG: usize = 0x148;
+pub(crate) const CART_RAM_FLAG: usize = 0x149;
+// pub(crate) const CART_HEADER_CSUM: usize = 0x14D;
+// pub(crate) const CART_GLOBAL_CSUM: URange = 0x14E..=0x14F;
 
-/// In real gameboys the value of logo in header should be equal to
-/// this value, otherwise, the game will not run on real hardware.
-pub(crate) const CART_LOGO_VAL: [u8; 48] = [
-    0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
-    0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E, 0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
-    0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
-];
+// /// In real gameboys the value of logo in header should be equal to
+// /// this value, otherwise, the game will not run on real hardware.
+// pub(crate) const CART_LOGO_VAL: [u8; 48] = [
+//     0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+//     0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E, 0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+//     0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+// ];
 
 /// Runs in CGB mode only, do speed switch before handing off control.
 pub(crate) const CART_CGB_ONLY: u8 = 0xC0;
-/// Supports CGB mode but is backwards compatible with monochrome.
-pub(crate) const CART_CGB_TOO: u8 = 0x80;
+// /// Supports CGB mode but is backwards compatible with monochrome.
+// pub(crate) const CART_CGB_TOO: u8 = 0x80;
 
 // Interrupt and RST jump targets.
 //---------------------------------------------------------
@@ -201,8 +195,3 @@ pub(crate) const INT_STAT_VEC: u16 = 0x48;
 pub(crate) const INT_TIMER_VEC: u16 = 0x50;
 pub(crate) const INT_SERIAL_VEC: u16 = 0x58;
 pub(crate) const INT_JOYPAD_VEC: u16 = 0x60;
-
-// RST jump addresses
-// pub(crate) const RST_VECS: [u16; 8] = [
-//     0x0000, 0x0008, 0x0010, 0x0018, 0x0020, 0x0028, 0x0030, 0x0038,
-// ];

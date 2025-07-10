@@ -3,7 +3,7 @@ use crate::{
     regs::{AudioN43, AudioNx0, AudioNx2, AudioNx3, AudioNx4},
 };
 
-const DIVIDER_MAX_PERIOD: u32 = 2048; // times 2 or 4 dots
+const DIVIDER_MAX_PERIOD: u32 = 2048; // times 2(wave channel) or 4(others) dots
 const LSFR_BASE_PERIOD: u32 = 16; // dots
 const SWEEPER_BASE_PERIOD: u32 = 4; // APU-ticks
 const LENGTH_BASE_PERIOD: u32 = 2; // APU-ticks
@@ -19,18 +19,14 @@ pub(crate) struct VolumeEnvelope {
 }
 
 impl VolumeEnvelope {
-    pub(crate) fn setup(&mut self, nx2: &AudioNx2) {
-        self.volume = nx2.initial_volume;
-
-        if nx2.pace == 0 {
-            self.active = false;
-            return;
-        }
-
+    pub(crate) fn new(nx2: &AudioNx2) -> Self {
         assert!(nx2.pace <= 7);
-        self.counter = Counter::new(ENVELOPE_BASE_PERIOD * nx2.pace as u32);
-        self.decrement = nx2.direction == 0;
-        self.active = true;
+        Self {
+            volume: nx2.initial_volume,
+            counter: Counter::new(ENVELOPE_BASE_PERIOD * nx2.pace as u32),
+            decrement: nx2.direction == 0,
+            active: nx2.pace != 0,
+        }
     }
 
     pub(crate) fn tick(&mut self) {
@@ -58,13 +54,15 @@ pub(crate) struct LengthTimer {
 }
 
 impl LengthTimer {
-    pub(crate) fn setup(&mut self, is_wave_channel: bool, initial: u8) {
+    pub(crate) fn new(is_wave_channel: bool, initial: u8) -> Self {
         let initial = initial as u32;
         let max_period = if is_wave_channel { 256 } else { 64 };
 
         assert!(initial < max_period);
-        self.counter = Counter::new(LENGTH_BASE_PERIOD * (max_period - initial));
-        self.active = true;
+        Self {
+            counter: Counter::new(LENGTH_BASE_PERIOD * (max_period - initial)),
+            active: true,
+        }
     }
 
     pub(crate) fn tick(&mut self) {
@@ -81,7 +79,7 @@ impl LengthTimer {
 #[derive(Default)]
 pub(crate) struct PeriodDivider {
     wave_sample_count: u8,
-    tick_dots: u32,
+    dots_per_tick: u32,
 
     counter: Counter,
     sample_idx: u8,
@@ -94,11 +92,11 @@ impl PeriodDivider {
         // Period divider ticks once every 2-dots for wave channel and
         // every 4-dots for other channels.
         let wave_sample_count = if is_wave_channel { 32 } else { 8 };
-        let tick_dots = if is_wave_channel { 2 } else { 4 };
+        let dots_per_tick = if is_wave_channel { 2 } else { 4 };
 
         Self {
             wave_sample_count,
-            tick_dots,
+            dots_per_tick,
             ..Default::default()
         }
     }
@@ -112,7 +110,7 @@ impl PeriodDivider {
         assert!(period <= DIVIDER_MAX_PERIOD);
         self.sample_idx = 0;
         self.period = get_period(nx3, nx4);
-        self.counter = Counter::new(self.tick_dots * (DIVIDER_MAX_PERIOD - self.period));
+        self.counter = Counter::new(self.dots_per_tick * (DIVIDER_MAX_PERIOD - self.period));
     }
 
     pub(crate) fn tick(&mut self, dots: u32) {
@@ -121,9 +119,9 @@ impl PeriodDivider {
         self.sample_idx &= self.wave_sample_count - 1;
     }
 
-    /// Returns if wave_idx overflowed during the last tick.
+    /// Returns true if wave_idx overflowed during the last tick.
     // Actual period is updated only after the sample finishes, that is,
-    // wave counter wraps back to 0. So this can be used to check for that.
+    // wave counter wraps back to 0.
     pub(crate) fn is_reload_allowed(&self) -> bool {
         self.sample_finished
     }
@@ -142,7 +140,7 @@ impl PeriodDivider {
 pub(crate) fn new_lfsr_counter(n43: &AudioN43) -> Counter {
     // Period is: base_period * divider * 2 ^ shift, where
     // if divider is 0 then it is treated as 0.5.
-    let fx = (1 as u32) << n43.clock_shift;
+    let fx = 1 << n43.clock_shift;
     let fx = if n43.clock_divider == 0 {
         fx / 2
     } else {
