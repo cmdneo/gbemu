@@ -4,26 +4,29 @@ use crate::{counter::Counter, regs::SerialCtrl};
 
 #[derive(Default)]
 pub(crate) struct Serial {
-    pub(crate) is_2x: bool,
     pub(crate) debug_serial: bool,
+    pub(crate) is_2x: bool,
+    is_cgb: bool,
 
     // Registers owned by it
     pub(crate) sc: SerialCtrl,
     pub(crate) sb: u8,
 
-    /// M-cycles counter for one period, range [0, period).
     counter: Counter,
     bits_done: u32,
     transferring: bool,
 }
 
 impl Serial {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(is_cgb: bool) -> Self {
+        Self {
+            is_cgb,
+            ..Default::default()
+        }
     }
 
     /// Tick and return true if SERIAL interrupt has been requested.
-    pub(crate) fn tick(&mut self, mcycles: u32, is_cgb_cart: bool) -> bool {
+    pub(crate) fn tick(&mut self, mcycles: u32) -> bool {
         if self.sc.tx_enable == 0 {
             return false;
         }
@@ -35,7 +38,7 @@ impl Serial {
                 std::io::stdout().flush().unwrap();
             }
 
-            self.counter = Counter::new(get_mperiod(self.sc, is_cgb_cart, self.is_2x));
+            self.counter = Counter::new(get_period_in_mcycles(self.sc, self.is_cgb, self.is_2x));
             self.bits_done = 0;
             self.transferring = true;
             return false;
@@ -60,13 +63,13 @@ impl Serial {
     }
 }
 
-/// Get period for 1 serial-cycle(transfers 1-bit) in M-cycles.
-fn get_mperiod(sc: SerialCtrl, is_cgb_cart: bool, is_2x: bool) -> u32 {
+/// Get period for 1 serial-cycle(transfers 1-bit).
+fn get_period_in_mcycles(sc: SerialCtrl, is_cgb: bool, is_2x: bool) -> u32 {
     if sc.clock_select == 0 {
         return 0; // External clock is absent.
     }
 
-    if !is_cgb_cart {
+    if !is_cgb {
         128
     } else {
         match (sc.clock_speed == 1, is_2x) {

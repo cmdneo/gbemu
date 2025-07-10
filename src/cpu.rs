@@ -4,19 +4,8 @@ mod table;
 
 use std::num::Wrapping;
 
-use crate::{
-    info::{self},
-    log,
-    macros::bit_fields,
-    mem::Mmu,
-    regs::Key1,
-};
+use crate::{info, log, macros::bit_fields, mask_u16, mmu::Mmu, regs::Key1};
 use isa::{Cond, Instr, Opcode, Operand, Reg};
-
-/// LDH adds 0xFF00 to its memory address operands before using
-/// them for accessing memory, it is for HRAM.  
-/// Only LDH has such operands, they are: `[C]` and `[imm8]`.
-const LDH_OFFSET: u16 = 0xFF00;
 
 /// Gameboy CPU emulator with support for double speed mode.  
 /// Instruction semantics are implemented as specified in:
@@ -25,7 +14,7 @@ pub struct Cpu {
     // CPU owns the mmu and mmu owns rest of the system.
     pub(crate) mmu: Mmu,
     pub(crate) state: CpuState,
-    /// When stopped everything is stopped until a joystick interrupt.
+    pub(crate) frequency: u32,
     pub(crate) trace_execution: bool,
 
     // Machine registers
@@ -50,10 +39,13 @@ pub struct Cpu {
 pub(crate) enum CpuState {
     #[default]
     Running,
-    /// When halted only the CPU is halted from executing instructions
-    /// until an interrupt occurs, however, clocks still run.
+    /// When halted the CPU is halted from executing instructions
+    /// until an interrupt occurs.
     Halted,
-    /// When stopped everything is stopped until a joystick interrupt.
+    /// When stopped the CPU is halted from executing instructions
+    /// until a joystick interrupt occurs. It also resets the timer.
+    // We do not implement it exactly as specified as the spec itself
+    // is not clear, so it mostly behaves like a HALT.
     Stopped,
 }
 
@@ -67,11 +59,17 @@ bit_fields! {
     }
 }
 
+/// LDH adds 0xFF00 to its memory address operands before using
+/// them for accessing memory, it is for HRAM.  
+/// Only LDH has such operands, they are: `[C]` and `[imm8]`.
+const LDH_OFFSET: u16 = 0xFF00;
+
 impl Cpu {
     pub(crate) fn new(mmu: Mmu) -> Self {
         Self {
             mmu,
             state: CpuState::Running,
+            frequency: info::FREQUENCY,
             trace_execution: false,
 
             pc: Wrapping(0),
@@ -92,20 +90,17 @@ impl Cpu {
 
     /// Performs the next atomic step, that is, execute an instruction or
     /// handle a pending interrupt and return the number of cycles consumed.
-    ///
-    /// Returns a value of at least `info::SPEED_SWITCH_MCYCLES` on
-    /// speed switch to dual-speed mode.
     pub(crate) fn step(&mut self) -> u32 {
         let old_set_ime = self.set_ime_later;
 
         // Either handle an interrupt or run an instruction.
-        let mcycles = if self.handle_interrupt() {
-            5 // It takes 5-mcycles to handle an interrupt.
+        let mcycles = if let Some(c) = self.handle_interrupt() {
+            c
         } else {
             match self.state {
                 CpuState::Running => self.exec_next_instr(),
                 CpuState::Halted => 1,
-                CpuState::Stopped => 0,
+                CpuState::Stopped => 1,
             }
         };
 
@@ -118,8 +113,8 @@ impl Cpu {
         mcycles
     }
 
-    /// Handle an interrupt if any and return true if handled.
-    fn handle_interrupt(&mut self) -> bool {
+    /// Handle an interrupt if any and return mcycles needed for it if handled.
+    fn handle_interrupt(&mut self) -> Option<u32> {
         let ints = self.mmu.iflag.masked(self.mmu.ienable);
 
         // Wakeup from low-power states when a servicable interrupts comes.
@@ -127,16 +122,12 @@ impl Cpu {
         if (self.state == CpuState::Halted && ints.read() != 0)
             || (self.state == CpuState::Stopped && ints.joypad == 1)
         {
-            if self.state == CpuState::Stopped {
-                self.mmu.apu.play_audio();
-            }
-
             self.state = CpuState::Running;
         }
 
         // No interrupts available or disabled.
         if !self.ime || ints.read() == 0 {
-            return false;
+            return None;
         }
 
         let mut iflag = self.mmu.iflag;
@@ -161,16 +152,12 @@ impl Cpu {
             unreachable!("at least one interrupt is always present")
         };
 
-        // Reset handeled interrupt in IF and disable further interrupts.
-        self.mmu.iflag = iflag;
-        self.ime = false;
-
-        // Start executing ISR. It takes a total of 5 M-cycles. Those are:
-        // 2 wait states, 2 for saving PC and one for branching to ISR.
-        self.do_push(self.pc.0);
-        self.pc.0 = new_pc;
-
-        true
+        // Interrupt handling sequence:
+        self.mmu.iflag = iflag; // reset current interrupt flag
+        self.ime = false; // disable future interrupts
+        self.do_push(self.pc.0); // push return address
+        self.pc.0 = new_pc; // branch
+        Some(5) // it takes 5-mcycles to handle the interrupt.
     }
 
     fn exec_next_instr(&mut self) -> u32 {
@@ -277,17 +264,14 @@ impl Cpu {
             Halt => self.state = CpuState::Halted,
 
             Stop => {
-                let key = self.mmu.key1;
-                if self.mmu.cart.is_cgb && key.armed == 1 && key.speed == 0 {
+                if self.mmu.cart.is_cgb && self.mmu.key1.armed == 1 && self.mmu.key1.speed == 0 {
                     log::info("cpu: switched to dual-speed mode");
                     self.do_speed_switch();
-                    mcycles = 1;
                 } else {
-                    self.mmu.apu.pause_audio();
                     self.state = CpuState::Stopped;
                 }
 
-                self.mmu.timer.set_div(0);
+                self.mmu.timer.reset_div();
             }
 
             // Misc
@@ -446,7 +430,7 @@ impl Cpu {
     // Utility methods, these help evaluate a specific class if instructions.
     //-----------------------------------------------------------------------
 
-    /// Push 2-bytes and increment `mcycles`.
+    /// Push 2-bytes
     fn do_push(&mut self, v: u16) {
         let [h, l] = v.to_be_bytes();
 
@@ -456,7 +440,7 @@ impl Cpu {
         self.mmu.write(self.sp.0, l);
     }
 
-    /// Pop 2-bytes and increment `mcycles`.
+    /// Pop 2-bytes
     fn do_pop(&mut self) -> u16 {
         let l = self.mmu.read(self.sp.0);
         self.sp += 1;
@@ -514,8 +498,7 @@ impl Cpu {
         r
     }
 
-    /// Does arithmetic and returns result and sets flags as required.  
-    /// Only flags are set and result is unchanged(returns `a`) if op is `CP`.
+    /// Does arithmetic and returns result and sets flags as required.
     fn do_8bit_arith(&mut self, op: Opcode, a: u8, b: u8) -> u8 {
         let cb = self.flags.c;
 
@@ -571,8 +554,7 @@ impl Cpu {
     /// Does all kinds of shifts and rotations and sets flags as specified.
     fn do_shift_or_rotate(&mut self, op: Opcode, a: u8) -> u8 {
         // Bit Shift and Rotations, all done on 8-bit operands only.
-        // So for left shifts just shift-right by 7 to get MSB of the
-        // operand for determing the carry flag.
+        // For left shift MSB and for right shift LSB determines the carry flag.
 
         use Opcode::*;
         let r = match op {
@@ -598,7 +580,7 @@ impl Cpu {
             // For left shifts/rotates, MSB will go into carry.
             Rlca | Rlc | Rla | Rl | Sla => self.set_cz00(a >> 7, r),
             // For right shifts/rotates, LSB will go into carry.
-            Rrca | Rrc | Rra | Rr | Sra | Srl => self.set_cz00(a, r),
+            Rrca | Rrc | Rra | Rr | Sra | Srl => self.set_cz00(a & 1, r),
 
             _ => unreachable!(),
         }
@@ -690,10 +672,8 @@ impl Cpu {
     }
 
     fn do_speed_switch(&mut self) {
-        // Tell all other components that we are now operating in
-        // dual speed mode. This needs to be done only once.
-        self.mmu.is_2x = true;
-        self.mmu.ppu.fetcher.is_2x = true;
+        // Update in all components which need to know speed mode.
+        self.frequency = info::FREQUENCY_2X;
         self.mmu.timer.is_2x = true;
         self.mmu.serial.is_2x = true;
 
@@ -742,7 +722,7 @@ fn is_borrow3(a: u16, b: u16, c: u16, bits: u32) -> u8 {
 #[inline]
 fn is_carry(a: u16, b: u16, bits: u32) -> u8 {
     // Overflow for r=a+b: if r < [a or b]
-    let m = mask(bits);
+    let m = mask_u16(bits);
     let (a, b) = (a & m, b & m);
     (a.wrapping_add(b) & m < a) as u8
 }
@@ -750,7 +730,7 @@ fn is_carry(a: u16, b: u16, bits: u32) -> u8 {
 #[inline]
 fn is_borrow(a: u16, b: u16, bits: u32) -> u8 {
     // Underflow for r=a-b: if b > a
-    let m = mask(bits);
+    let m = mask_u16(bits);
     let (a, b) = (a & m, b & m);
     (b > a) as u8
 }
@@ -771,10 +751,4 @@ fn get_hl_reg_delta(op: Operand) -> i16 {
         },
         _ => 0,
     }
-}
-
-/// A mask with `bit_cnt` number of lower-order bits set to 1.
-#[inline(always)]
-const fn mask(bit_cnt: u32) -> u16 {
-    u16::MAX >> (16 - bit_cnt)
 }

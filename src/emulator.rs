@@ -1,29 +1,21 @@
 use std::{
-    sync::mpsc::{self, RecvError, TryRecvError},
-    time::Instant,
-};
-
-use macroquad::{
-    miniquad::date::now,
-    rand::{rand, srand},
+    sync::mpsc::{Receiver, Sender, TryRecvError},
+    thread,
+    time::{Duration, Instant},
 };
 
 use crate::{
     cartridge::Cartidge,
-    cpu::{Cpu, CpuState},
-    frame::Frame,
-    info,
-    mem::Mmu,
-    msg::{EmulatorMsg, UserMsg},
-    EmuError,
+    cpu::Cpu,
+    mmu::Mmu,
+    msg::{Reply, Request, VideoFrame},
+    EmulatorErr,
 };
 
 /// Number of CPU steps to run in one go.
 // Max steps run at once must be less than VBLANK interval,
 // because we capture a frame for rendering only in VBLANK.
 // VBLANK is 4560 dots and the longest it takes for a step is 24 dots.
-// Why 24 dots? It takes max 6 mcycles for an instruction and each
-// mcycle is made up of 2 or 4 dots, and 4*6 = 24.
 // So number of steps should be always less than 190 (=4560/24).
 const STEPS_PER_BURST: usize = 150;
 
@@ -33,14 +25,13 @@ pub struct Emulator {
     tcycles: u64,
     /// Time when the timer was reset.
     start_time: Instant,
-    target_freq: u32,
-    actual_freq: f64,
+    /// Actual clock frequency achieved by the emulator
+    real_frequency: f64,
     is_running: bool,
-    frame_requested: bool,
 }
 
 impl Emulator {
-    pub fn new(rom: &[u8]) -> Result<Self, EmuError> {
+    pub fn new(rom: Vec<u8>) -> Result<Self, EmulatorErr> {
         let cartidge = Cartidge::new(rom)?;
         let mmu = Mmu::new(cartidge);
         let cpu = Cpu::new(mmu);
@@ -48,26 +39,35 @@ impl Emulator {
         Ok(Self {
             cpu,
             tcycles: 0,
-            target_freq: info::FREQUENCY,
-            actual_freq: 0.0,
+            real_frequency: 0.0,
             start_time: Instant::now(),
             is_running: false,
-            frame_requested: false,
         })
     }
 
-    /// Start the emulator and run until `UserMsg::Shutdown` is recieved.
-    /// Run it in a new thread and use channels to communicate with
-    /// it: buttons presses, frame requests and other commands.
+    /// Run it in a new thread and use channels to communicate with it
+    /// information: buttons presses, frame requests and other commands.
+    /// Send a [Request::Start] to actually start the emulator and run until
+    /// [Request::Shutdown] is recieved.
     ///
     /// Parameters:  
-    /// `user_msg_rx`: For recieving messages for controlling the emulator.  
-    /// `emu_msg_tx` : For sending replies(if any) for recieved messages.
+    /// - `request_rx`   : For [Request] messages for controlling the emulator.
+    /// - `reply_tx`     : For [Reply] messages (if any) for recieved messages.
+    /// - `audio_ctrl_rx`: For starting a new audio sampling with the specified
+    ///   sampling period and returning the previously accumulated samples,
+    ///   a period of 0 stops sampling.
+    /// - `audio_data_tx`: For recieving the accumulated audio data.
     pub fn run(
         &mut self,
-        user_msg_rx: mpsc::Receiver<UserMsg>,
-        emu_msg_tx: mpsc::Sender<EmulatorMsg>,
+        request_rx: Receiver<Request>,
+        reply_tx: Sender<Reply>,
+        audio_ctrl_rx: Receiver<u32>,
+        audio_data_tx: Sender<Box<[f32]>>,
     ) {
+        if !matches!(request_rx.recv().unwrap(), Request::Start) {
+            panic!("Emulator not started yet, send [Request::Start] first.");
+        }
+
         self.init();
         self.reset_timers();
         self.is_running = true;
@@ -78,34 +78,9 @@ impl Emulator {
                 self.step();
             }
 
-            // If CPU is stopped then we wait in blocking mode.
-            if !self.handle_msgs(
-                &user_msg_rx,
-                &emu_msg_tx,
-                self.cpu.state != CpuState::Stopped,
-            ) {
-                panic!("send/recieve channels closed abnormally");
-            }
-
-            // Only send back frame after entring VBLANK mode to avoid screen jitter.
-            if self.frame_requested && self.cpu.mmu.get_mode() == info::MODE_VBLANK {
-                let mut f = Box::new(Frame::default());
-                self.cpu.mmu.ppu.copy_frame(f.as_mut());
-                self.frame_requested = false;
-                emu_msg_tx.send(EmulatorMsg::NewFrame(f)).unwrap();
-            }
-
-            // Busy-wait until clock starts lagging behind.
-            loop {
-                let elapsed = self.start_time.elapsed().as_secs_f64();
-                let expected = elapsed * self.target_freq as f64;
-                let actual = self.tcycles as f64;
-
-                if expected > actual {
-                    self.actual_freq = actual / elapsed;
-                    break;
-                }
-            }
+            assert!(self.handle_audio_flow(&audio_ctrl_rx, &audio_data_tx));
+            assert!(self.handle_msgs(&request_rx, &reply_tx));
+            self.manage_sleep_timer();
         }
     }
 
@@ -115,112 +90,100 @@ impl Emulator {
     // Here, we try to achieve the same effect by running each component
     // step-by-step. It is as if the CPU produces cycles and other components
     // (PPU and Timer) consume it.
-    //
-    // First we run the CPU and check how many cycles it used,
-    // then run other components for exactly than many cycles.
-    // This simplifies synchronization and timings.
     fn step(&mut self) {
-        let was_2x = self.cpu.mmu.is_2x;
         let mcycles = self.cpu.step();
-
-        if self.cpu.state == CpuState::Stopped {
-            self.reset_timers();
-            return;
-        }
-
-        // Adjust frequency after speed switch.
-        if !was_2x && self.cpu.mmu.is_2x {
-            self.reset_timers();
-            self.target_freq = info::FREQUENCY_2X;
-        }
-
+        assert!(mcycles > 0);
         self.tcycles += mcycles as u64 * 4;
     }
 
-    /// Handle user messages and respond to them.
+    /// Handle user messages and respond to them(if required).
     /// Returns false if send/recieve failed, otherwise true.
-    fn handle_msgs(
-        &mut self,
-        msg_rx: &mpsc::Receiver<UserMsg>,
-        msg_tx: &mpsc::Sender<EmulatorMsg>,
-        non_blocking: bool,
-    ) -> bool {
-        let msg = if non_blocking {
-            match msg_rx.try_recv() {
-                Ok(msg) => msg,
-                Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => return false,
-            }
-        } else {
-            match msg_rx.recv() {
-                Ok(msg) => msg,
-                Err(RecvError) => return false,
-            }
+    fn handle_msgs(&mut self, request_rx: &Receiver<Request>, reply_tx: &Sender<Reply>) -> bool {
+        let msg = match request_rx.try_recv() {
+            Ok(msg) => msg,
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => return false,
         };
 
         match msg {
-            UserMsg::UpdateButtons(btns) => {
+            Request::Start => panic!("already running"),
+
+            Request::UpdateButtonState(btns) => {
                 let (dpad, btns) = btns.to_internal_repr();
                 self.cpu.mmu.update_joypad(dpad, btns);
                 true
             }
 
-            UserMsg::CyclePalette => {
+            Request::CyclePalette => {
                 self.cpu.mmu.ppu.cycle_palette(1);
                 true
             }
 
-            UserMsg::GetFrame => {
-                // Send frame only on VBLANK to avoid choppiness.
-                self.frame_requested = true;
-                true
+            Request::GetVideoFrame => {
+                let mut f = Box::new(VideoFrame::default());
+                self.cpu.mmu.ppu.copy_frame(f.as_mut());
+                reply_tx.send(Reply::VideoFrame(f)).is_ok()
             }
 
-            UserMsg::GetFrequency => msg_tx
-                .send(EmulatorMsg::Frequency(self.actual_freq))
+            Request::GetTitle => reply_tx
+                .send(Reply::Title(self.cpu.mmu.cart.title.clone()))
                 .is_ok(),
 
-            UserMsg::Shutdown => {
+            Request::GetFrequency => reply_tx.send(Reply::Frequency(self.real_frequency)).is_ok(),
+
+            Request::Shutdown => {
                 self.is_running = false;
-                self.cpu.mmu.apu.stop_audio();
-                msg_tx.send(EmulatorMsg::ShuttingDown).is_ok()
+                reply_tx.send(Reply::ShuttingDown).is_ok()
             }
 
-            UserMsg::ClearFrame(c) => {
-                self.cpu.mmu.ppu.paint_frame(c);
-                true
-            }
+            Request::DebuggerStart => todo!(),
+            Request::DebuggerStep => todo!(),
+            Request::DebuggerStop => todo!(),
+        }
+    }
 
-            UserMsg::DebuggerStart => todo!(),
-            UserMsg::DebuggerStep => todo!(),
-            UserMsg::DebuggerStop => todo!(),
+    fn handle_audio_flow(
+        &mut self,
+        audio_ctrl_rx: &Receiver<u32>,
+        audio_data_tx: &Sender<Box<[f32]>>,
+    ) -> bool {
+        match audio_ctrl_rx.try_recv() {
+            Ok(period) => audio_data_tx
+                .send(
+                    self.cpu
+                        .mmu
+                        .apu
+                        .start_new_sampling(period)
+                        .into_boxed_slice(),
+                )
+                .is_ok(),
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
         }
     }
 
     /// Initialize the registers and state, make it ready for execution.
     fn init(&mut self) {
-        // Initial values for starting up the program.
+        // Initial values for starting up the program in DMG mode as per:
+        // https://gbdev.io/pandocs/Power_Up_Sequence.html
         self.cpu.pc.0 = 0x0100;
         self.cpu.sp.0 = 0xFFFE;
+        self.cpu.mmu.joypad.write(0xCF);
+        self.cpu.mmu.wram_idx = 1;
+        self.cpu.mmu.ppu.bgp = 0xFC;
+        self.cpu.mmu.ppu.fetcher.lcdc.write(0x91);
+        self.cpu.mmu.ppu.stat.write(0x85);
+    }
 
-        // TODO Use a bootloader for initialization stuff
-        let m = &mut self.cpu.mmu;
+    fn manage_sleep_timer(&mut self) {
+        let elapsed = self.start_time.elapsed().as_secs_f64();
+        let executed = self.tcycles as f64 / self.cpu.frequency as f64;
+        let ahead = executed - elapsed;
 
-        m.joypad.write(0xCF);
-        m.wram_idx = 1;
-        m.ppu.bgp = 0xFC;
-        m.ppu.fetcher.lcdc.write(0x91);
-        m.ppu.stat.write(0x85);
-
-        srand((now() * 1000.0) as u64);
-        for n in m.ppu.bg_palette.iter_mut() {
-            *n = rand() as u8;
+        self.real_frequency = self.tcycles as f64 / elapsed;
+        if ahead > 0.0 {
+            thread::sleep(Duration::from_secs_f64(ahead));
         }
-        for n in m.ppu.bg_palette.iter_mut() {
-            *n = rand() as u8;
-        }
-
-        self.cpu.mmu.apu.play_audio();
     }
 
     fn reset_timers(&mut self) {

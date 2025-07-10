@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-macroquad = "^0.4"
-cpal = "^0.15"
+sdl3 = "0.14.35"
 
 [profile.dev]
 opt-level = 1

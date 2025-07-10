@@ -1,11 +1,19 @@
-use crate::{frame, regs};
+use crate::{info::SCREEN_RESOLUTION, regs};
 
-pub enum UserMsg {
-    UpdateButtons(ButtonState),
+pub enum Request {
+    /// Tell emulator to start executing code
+    Start,
+    /// Update the emulator state about which buttons are pressed/raised.
+    UpdateButtonState(ButtonState),
+    /// Cycle through a predefined RGB palette for monochrome ROMs.
     CyclePalette,
-    ClearFrame(frame::Color),
-    GetFrame,
+    /// Get the latest ready video frame.
+    GetVideoFrame,
+    /// Get the cartridge title.
+    GetTitle,
+    /// Get clock frequency
     GetFrequency,
+    /// Request a shutdown and wait for [Reply::ShuttingDown] before exiting.
     Shutdown,
 
     // TODO For debugging the CPU and execution.
@@ -14,10 +22,64 @@ pub enum UserMsg {
     DebuggerStop,
 }
 
-pub enum EmulatorMsg {
-    NewFrame(Box<frame::Frame>),
+pub enum Reply {
+    /// Video frame in RGB-24.
+    VideoFrame(Box<VideoFrame>),
+    /// Raw title data stored in the cartridge.
+    Title(String),
+    /// Current clock frequency.
     Frequency(f64),
+    /// Shutdown request acknowledgement message.
     ShuttingDown,
+}
+
+#[derive(Clone)]
+pub struct VideoFrame {
+    pixels: [[Color; SCREEN_RESOLUTION.0]; SCREEN_RESOLUTION.1],
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    pub const fn from_hexcode(hexcode: u32) -> Self {
+        let bs = hexcode.to_le_bytes();
+        Self {
+            r: bs[2],
+            g: bs[1],
+            b: bs[0],
+        }
+    }
+}
+
+impl VideoFrame {
+    pub fn get(&self, x: usize, y: usize) -> Color {
+        self.pixels[y][x]
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, color: Color) {
+        self.pixels[y][x] = color;
+    }
+
+    pub fn set_all(&mut self, color: Color) {
+        for row in self.pixels.iter_mut() {
+            for cell in row.iter_mut() {
+                *cell = color;
+            }
+        }
+    }
+}
+
+impl Default for VideoFrame {
+    fn default() -> Self {
+        VideoFrame {
+            pixels: [[Default::default(); SCREEN_RESOLUTION.0]; SCREEN_RESOLUTION.1],
+        }
+    }
 }
 
 /// A glue type for sending button states from user to emulator.
@@ -28,6 +90,7 @@ pub struct ButtonState {
     pub b: bool,
     pub select: bool,
     pub start: bool,
+
     // D-Pad buttons
     pub up: bool,
     pub down: bool,
@@ -54,9 +117,3 @@ impl ButtonState {
         (dpad, btns)
     }
 }
-
-// /// Some emulator state information.
-// #[derive(Default, Clone, Copy)]
-// pub struct EmulatorInfo {
-//     channel_averages: [f32; 4],
-// }

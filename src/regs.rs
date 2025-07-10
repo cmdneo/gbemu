@@ -84,7 +84,7 @@ bit_fields! {
 
 bit_fields! {
     /// Background/Object color palette index.
-    pub(crate) struct CgbPaletteColor<u16> {
+    pub(crate) struct CgbColor<u16> {
         red: 5,
         green: 5,
         blue: 5,
@@ -128,15 +128,6 @@ bit_fields! {
         armed: 1,
         _1: 6,
         speed: 1,
-    }
-}
-
-bit_fields! {
-    pub(crate) struct Rp<u8> {
-        on: 1,
-        fixed: 1,
-        _1: 4,
-        read_en: 2,
     }
 }
 

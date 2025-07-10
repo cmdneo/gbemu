@@ -44,7 +44,7 @@ impl fmt::Display for Instr {
         ) {
             (true, true) => write!(f, "{} {}, {}", opcode, self.op1, self.op2),
             (true, false) => write!(f, "{} {}", opcode, self.op1),
-            (false, false) => write!(f, "{}", opcode),
+            (false, false) => write!(f, "{opcode}"),
             (false, true) => panic!("invalid: first operand absent but second present"),
         }
     }

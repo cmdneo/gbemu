@@ -1,17 +1,15 @@
 //! Audio Procrssing Unit
-mod audio;
+
 mod noise;
 mod parts;
 mod pulse;
 mod wave;
 
-use std::sync::mpsc;
-
 use noise::NoiseChannel;
 use pulse::PulseChannel;
 use wave::WaveChannel;
 
-use crate::{info, log, regs};
+use crate::{counter::Counter, regs};
 
 /// Audio Processing Unit, generates samples and sends it to the
 /// audio player(backend).  
@@ -26,16 +24,9 @@ pub(crate) struct Apu {
     pub(crate) ch3: WaveChannel,
     pub(crate) ch4: NoiseChannel,
 
-    // For seeing channel response.
-    pub(crate) ch_avgs: [f64; 4],
-
-    player: Option<audio::AudioPlayer>,
-    sender: mpsc::Sender<audio::TimedSample>,
-
-    // For audio timing and sample generation.
-    time_elapsed: f64,
-    last_sampled: f64,
-    sample_rate: f64,
+    /// Audio samples in L R format.
+    stereo_samples: Vec<f32>,
+    sampling_counter: Counter,
 
     // For the HPF(high pass filter) to eliminate any DC offset.
     charge_factor: f64,
@@ -43,17 +34,14 @@ pub(crate) struct Apu {
     right_charge: f64,
 }
 
+fn calc_charge_factor(period_in_dots: u32) -> f64 {
+    // Constant calculated as specified in docs for high pass filter:
+    // https://gbdev.io/pandocs/Audio_details.html
+    0.999958_f64.powf(period_in_dots as f64)
+}
+
 impl Apu {
     pub(crate) fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-        let player = match audio::AudioPlayer::new(rx) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                log::error(&format!("apu: cannot open audio device: {}", e));
-                None
-            }
-        };
-
         Self {
             ch1: PulseChannel::new(true),
             ch2: PulseChannel::new(false),
@@ -64,13 +52,8 @@ impl Apu {
             nr51: Default::default(),
             nr50: Default::default(),
 
-            ch_avgs: Default::default(),
-
-            sender: tx,
-            player,
-            last_sampled: 0.0,
-            time_elapsed: 0.0,
-            sample_rate: 0.0,
+            stereo_samples: Vec::new(),
+            sampling_counter: Counter::new(0), // Start with sampling disabled
 
             charge_factor: 0.0,
             left_charge: 0.0,
@@ -78,6 +61,8 @@ impl Apu {
         }
     }
 
+    /// Tick for `dots` cycles. `apu_event` DIV-APU tick from the Timer.
+    /// Ticks at normal speed even in dual-speed mode.
     pub(crate) fn tick(&mut self, dots: u32, apu_ticks: u8) {
         // DIV-APU counter ticks at only at 512Hz,
         // more that one tick in a single step means something is wrong.
@@ -90,7 +75,6 @@ impl Apu {
             self.ch4.apu_tick();
         }
 
-        // TODO Optimize this, this is really slow.
         self.ch1.tick(dots);
         self.ch2.tick(dots);
         self.ch3.tick(dots);
@@ -101,52 +85,24 @@ impl Apu {
         self.nr52.ch3_on = self.ch3.on as u8;
         self.nr52.ch4_on = self.ch4.on as u8;
 
-        self.time_elapsed += 1.0 / info::FREQUENCY as f64 * dots as f64;
-
-        if self.sample_rate != 0.0 {
+        for _ in 0..self.sampling_counter.tick(dots) {
             self.add_audio_sample();
         }
     }
 
-    pub(crate) fn play_audio(&mut self) {
-        if let Some(p) = self.player.as_mut() {
-            // HACK - Sample at a higher rate as samples produced are less
-            // than actual rate for some reason which causes
-            // audio buffer underruns. A factor of +10% seems to work.
-            self.sample_rate = p.sample_rate() as f64 * 1.1;
-            self.charge_factor = 0.999958_f64.powf(info::FREQUENCY as f64 / self.sample_rate);
-            self.left_charge = 0.0;
-            self.right_charge = 0.0;
+    /// Set sampling period and return previously accumulated samples,
+    /// a period of 0 stops the sampling process.
+    pub(crate) fn start_new_sampling(&mut self, period_in_dots: u32) -> Vec<f32> {
+        self.sampling_counter = Counter::new(period_in_dots);
+        self.charge_factor = calc_charge_factor(period_in_dots);
 
-            p.control(audio::Message::Play);
-        } else {
-            log::error("apu: cannot play audio: no audio player");
-        }
-    }
-
-    pub(crate) fn pause_audio(&mut self) {
-        if let Some(p) = self.player.as_mut() {
-            p.control(audio::Message::Pause);
-        }
-    }
-
-    pub(crate) fn stop_audio(&mut self) {
-        if let Some(p) = self.player.as_mut() {
-            p.control(audio::Message::Stop);
-        }
-
-        self.player = None;
+        std::mem::take(&mut self.stereo_samples)
     }
 
     fn add_audio_sample(&mut self) {
-        if self.time_elapsed - self.last_sampled < 1.0 / self.sample_rate {
-            return;
-        }
-
-        // In range [-4, 4].
+        // In range [-4, 4] for lv and rv amplitudes from all 4 channels combined.
         let mut lv = 0.0;
         let mut rv = 0.0;
-
         let mut add_lr = |left, right, v| {
             if left == 1 {
                 lv += v;
@@ -168,21 +124,13 @@ impl Apu {
 
         lv = calc_sample_amp(self.nr50.vol_left, lv);
         rv = calc_sample_amp(self.nr50.vol_right, rv);
+        (lv, rv) = self.apply_high_pass_filter(lv, rv);
 
-        (lv, rv) = self.apply_high_pass(lv, rv);
-
-        let s = audio::TimedSample {
-            left: (lv / 4.0) as f32,
-            right: (rv / 4.0) as f32,
-            timestamp: self.time_elapsed,
-        };
-
-        self.last_sampled = self.time_elapsed;
-        self.sender.send(s).unwrap();
-        self.update_channel_avgs(v1, v2, v3, v4);
+        self.stereo_samples.push((lv / 4.0) as f32);
+        self.stereo_samples.push((rv / 4.0) as f32);
     }
 
-    fn apply_high_pass(&mut self, in_l: f64, in_r: f64) -> (f64, f64) {
+    fn apply_high_pass_filter(&mut self, in_l: f64, in_r: f64) -> (f64, f64) {
         let out_l = in_l - self.left_charge;
         self.left_charge = in_l - out_l * self.charge_factor;
 
@@ -191,19 +139,12 @@ impl Apu {
 
         (out_l, out_r)
     }
-
-    fn update_channel_avgs(&mut self, c1: f64, c2: f64, c3: f64, c4: f64) {
-        const F: f64 = 0.1;
-
-        self.ch_avgs[0] = c1.abs() * F + self.ch_avgs[0] * (1.0 - F);
-        self.ch_avgs[1] = c2.abs() * F + self.ch_avgs[1] * (1.0 - F);
-        self.ch_avgs[2] = c3.abs() * F + self.ch_avgs[2] * (1.0 - F);
-        self.ch_avgs[3] = c4.abs() * F + self.ch_avgs[3] * (1.0 - F);
-    }
 }
 
+/// Convert digital signal value {0..15} to analog signal value [-1, 1].
 #[inline(always)]
 fn d_to_a(enabled: bool, d: u8) -> f64 {
+    // 7.5 is the mid point in 0-15.
     if enabled {
         (d as f64 - 7.5) / 7.5
     } else {

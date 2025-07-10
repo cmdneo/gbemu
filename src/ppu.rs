@@ -4,10 +4,12 @@ mod palettes;
 use fetcher::{LineFetcher, OamEntry, Pixel};
 
 use crate::{
-    frame::{Color, Frame},
     info::*,
-    regs::{CgbPaletteColor, IntrBits, LcdStat},
+    msg::{Color, VideoFrame},
+    regs::{CgbColor, IntrBits, LcdStat},
 };
+
+// TODO Implement CGB mode rendering and fix issues related to it.
 
 pub(crate) struct Ppu {
     pub(crate) fetcher: LineFetcher,
@@ -28,15 +30,15 @@ pub(crate) struct Ppu {
     dmg_palette_id: usize,
     /// Current PPU mode updates to it are carried to STAT register.
     mode: PpuMode,
-    /// Frame containing an RGB-24 representation of the screen pixels.
-    frame: Frame,
+    /// Frame containing the screen pixels with double bufferering.
+    // Double buffer is required for avoiding choppiness/tearing while drawing.
+    frame: [VideoFrame; 2],
+    frame_idx: usize,
     /// Amount of dots left, which determines how much to advance.
-    /// In normal mode     : 4 dots per M-cycle.
-    /// In dual-speed mode : 2 dots per M-cycle.
     dots_left: u32,
     /// Number of dots consumed for the current scan-line `LY`.
     dots_in_line: u32,
-    /// STAT interrupt is triggered when this goes from low to high
+    /// STAT interrupt is triggered when this goes from low to high.
     stat_intr_line: bool,
 }
 
@@ -55,9 +57,9 @@ enum PpuMode {
 }
 
 impl Ppu {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(is_cgb: bool) -> Self {
         Self {
-            fetcher: LineFetcher::new(),
+            fetcher: LineFetcher::new(is_cgb),
             oam: [0; SIZE_OAM],
             bg_palette: [0; SIZE_CGB_PALETTE],
             obj_palette: [0; SIZE_CGB_PALETTE],
@@ -71,13 +73,15 @@ impl Ppu {
             dmg_palette_id: palettes::DEFAULT_MONOCHROME,
             mode: PpuMode::Scan,
             frame: Default::default(),
+            frame_idx: 0,
             dots_in_line: 0,
             dots_left: 0,
             stat_intr_line: false,
         }
     }
 
-    /// Run for `dots` cycles, `dots` must be an even number.
+    /// Tick for `dots` cycles, `dots` must be an even number.
+    /// Ticks at normal speed even in dual-speed mode.
     pub(crate) fn tick(&mut self, dots: u32) -> IntrBits {
         // Reset and do nothing if PPU is disabled.
         if self.fetcher.lcdc.ppu_enable == 0 {
@@ -113,12 +117,8 @@ impl Ppu {
             % palettes::DMG_PALETTES.len();
     }
 
-    pub(crate) fn copy_frame(&self, frame: &mut Frame) {
-        *frame = self.frame.clone();
-    }
-
-    pub(crate) fn paint_frame(&mut self, color: Color) {
-        self.frame.set_all(color);
+    pub(crate) fn copy_frame(&self, frame: &mut VideoFrame) {
+        *frame = self.frame[1 - self.frame_idx].clone();
     }
 
     fn reset(&mut self) {
@@ -172,7 +172,7 @@ impl Ppu {
                 let px = self.fetcher.screen_line[i];
                 let color = self.pixel_to_color(px);
 
-                self.frame.set(i, self.ly as usize, color);
+                self.frame[self.frame_idx].set(i, self.ly as usize, color);
             }
 
             PpuMode::HBlank
@@ -183,9 +183,10 @@ impl Ppu {
 
     fn step_hblank(&mut self) -> PpuMode {
         // If current scan-line finishes and it was last draw line then
-        // goto VBlank, if not last line then just go back to OAM-Scan mode.
+        // goto VBlank and swap frame drawing buffers.
         if self.eat_dots(self.dots_left) {
             if self.ly as u32 == PPU_DRAW_LINES {
+                self.frame_idx = 1 - self.frame_idx;
                 PpuMode::VBlank
             } else {
                 PpuMode::Scan
@@ -253,9 +254,7 @@ impl Ppu {
     // Pixel to color synthesis
     //---------------------------------------------------------------
     fn pixel_to_color(&self, px: Pixel) -> Color {
-        if self.fetcher.is_2x {
-            // Transparent[color=0] object pixels have already been
-            // handeled by the fetcher during pixel mixing.
+        if self.fetcher.is_cgb {
             let color = self.get_cgb_color(px.is_obj, px.color_id, px.palette);
             cgb_to_color(color)
         } else {
@@ -269,20 +268,18 @@ impl Ppu {
 
             // Monochrome palettes stores colors for colors-ID(xx) as:
             // `[MSB] 33-22-11-00 [LSB]`
-            let color = (palette >> px.color_id * 2) & 0b11;
+            let color = (palette >> (px.color_id * 2)) & 0b11;
             color_map[color as usize]
         }
     }
 
     #[inline]
     fn get_cgb_color(&self, is_obj: bool, color_id: u8, palette_index: u8) -> u16 {
-        debug_assert!(palette_index < 8);
-        debug_assert!(color_id < 4);
-
         // Each CGB-palette is of 8-bytes consisting of 4 colors of 2-bytes each.
         let idx = (palette_index * 8 + color_id * 2) as usize;
 
         u16::from_le_bytes(if is_obj {
+            // Transparent object pixels have already filtered by the fetcher.
             [self.obj_palette[idx], self.obj_palette[idx + 1]]
         } else {
             [self.bg_palette[idx], self.bg_palette[idx + 1]]
@@ -312,7 +309,7 @@ fn cgb_to_color(cgb_color: u16) -> Color {
     // Each CGB color component of 5 bits.
     let scale = |x| ((x << 3) | (x >> 2)) as u8;
 
-    let c = CgbPaletteColor::new(cgb_color);
+    let c = CgbColor::new(cgb_color);
     Color {
         r: scale(c.red),
         g: scale(c.green),

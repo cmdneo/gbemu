@@ -9,7 +9,7 @@ type VramArray = [[u8; SIZE_VRAM_BANK]; VRAM_BANKS];
 /// Use `is_done` to check if line has been constructed and get the
 /// pixels from `screen_line`.
 pub(crate) struct LineFetcher {
-    pub(crate) is_2x: bool,
+    pub(super) is_cgb: bool,
     /// Objects(sprites) which lie on the current scan line. Max 10.
     /// Objects which come first in OAM should be placed first.
     pub(crate) objects: Vec<OamEntry>,
@@ -33,7 +33,7 @@ pub(crate) struct LineFetcher {
     draw_x: u8,
     /// Current position for tile-fetch on BG/Window.
     fetch_x: u8,
-    /// Current draw and fetch line, it is synchronized to LY by the PPU.
+    /// Current draw and fetch line, same as to LY when not in VSYNC.
     line: u8,
     /// Window internal line counter.
     win_y: u8,
@@ -90,9 +90,9 @@ impl OamEntry {
 }
 
 impl LineFetcher {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(is_cgb: bool) -> Self {
         Self {
-            is_2x: false,
+            is_cgb,
             objects: Vec::with_capacity(10),
             screen_line: [Default::default(); SCREEN_RESOLUTION.0],
 
@@ -119,7 +119,7 @@ impl LineFetcher {
     /// Call it once for every 2 dots.
     pub(crate) fn tick_2_dots(&mut self) {
         // We try to emulate the line pixel fetching, drawing and timing
-        // as much as possible, but dot timings will not be exact.
+        // to some extent but dot timings will not be exact.
         // For each tick call we proceed by two dots.
         // First we see if FIFO has any pixels excess of 8, if so,
         // push that to LCD line. Then fetch pixels as required.
@@ -128,6 +128,7 @@ impl LineFetcher {
         // for the entire line as window extends to the end of the right border.
         // Objects are drawn in advance in a seperate buffer and mixed with current
         // bg/window pixels in the fifo as per bg-win priority bits.
+        // TODO Emulate object fetching to get more accurate timings.
 
         if !self.objects.is_empty() {
             self.render_oam_objects();
@@ -157,7 +158,7 @@ impl LineFetcher {
         // Clear and set everything
         self.fifo.clear();
         self.objects.clear();
-        self.screen_line.fill_with(|| Pixel::default());
+        self.screen_line.fill_with(Pixel::default);
         self.obj_line.fill_with(|| None);
         self.window = None;
         self.fetch_x = 0;
@@ -170,15 +171,6 @@ impl LineFetcher {
     pub(crate) fn is_done(&self) -> bool {
         self.draw_x as usize == SCREEN_RESOLUTION.0
     }
-
-    // pub(crate) fn render_full_line(&mut self) {
-    //     self.render_oam_objects();
-
-    //     while (self.draw_x as usize) < SCREEN_RESOLUTION.0 {
-    //         self.fetch_tile();
-    //         self.push_pixels();
-    //     }
-    // }
 
     // Fetcher steps for fetching tiles, each take two dots.
     // --------------------------------------------------------------
@@ -195,7 +187,7 @@ impl LineFetcher {
             )
         };
 
-        self.bg_tile = TileLine::from_tilemap(&self.vram, tile_map, tx, y / 8, self.is_2x);
+        self.bg_tile = TileLine::from_tilemap(&self.vram, tile_map, tx, y / 8, self.is_cgb);
         self.bg_tile.line = y % 8;
         self.bg_tile
             .read_in_line(&self.vram, self.lcdc.bg_win_tile_data);
@@ -213,7 +205,7 @@ impl LineFetcher {
         // In non-CGB mode lcdc 0-bit controls bg/window enable.
         // If diabled its displays the blank color, that is 0.
         for i in 0..8 {
-            let color = if !self.is_2x && self.lcdc.bg_win_priotity == 0 {
+            let color = if !self.is_cgb && self.lcdc.bg_win_priotity == 0 {
                 0
             } else {
                 self.bg_tile.get_color_id(i)
@@ -299,7 +291,7 @@ impl LineFetcher {
         // In non-CGB mode sort using (X-position, OAM-index).
         // In CGB mode sort using (OAM-index) only.
         // In case of overlap higher priority objects are placed on top.
-        if !self.is_2x {
+        if !self.is_cgb {
             self.objects.sort_by(|a, b| a.xpos.cmp(&b.xpos));
         }
         self.objects.reverse(); // We draw by popping from end, so reverse it.
@@ -313,8 +305,8 @@ impl LineFetcher {
         // The obj.xpos stores object's X-position + 8. So,
         // clip parts of the object which are off-screen to the left.
         let tile = self.read_obj_tile_line(obj);
-        let xclip = if obj.xpos < 8 { 8 - obj.xpos } else { 0 };
-        let xbegin = if obj.xpos < 8 { 0 } else { obj.xpos - 8 };
+        let xclip = 8u8.saturating_sub(obj.xpos); // if obj.xpos < 8 { 8 - obj.xpos } else { 0 };
+        let xbegin = obj.xpos.saturating_sub(8);
         let xend = obj.xpos.min(SCREEN_RESOLUTION.0 as u8);
 
         for x in xbegin..xend {
@@ -334,7 +326,7 @@ impl LineFetcher {
     }
 
     fn read_obj_tile_line(&mut self, obj: OamEntry) -> TileLine {
-        let mut ret = TileLine::from_obj(obj, self.is_2x);
+        let mut ret = TileLine::from_obj(obj, self.is_cgb);
 
         // Tall objects are comprised of two consecutive tiles.
         // Upper part has even numbered tile-ID.
@@ -374,14 +366,12 @@ impl LineFetcher {
             return obj; // Obj always has priority over color 0 of BG/Win.
         }
 
-        if self.is_2x {
+        if self.is_cgb {
             if self.lcdc.bg_win_priotity & (bg.bg_priority | obj.bg_priority) == 1 {
                 return bg;
             }
-        } else {
-            if obj.bg_priority == 1 {
-                return bg;
-            }
+        } else if obj.bg_priority == 1 {
+            return bg;
         }
 
         obj
@@ -440,8 +430,8 @@ struct TileLine {
 }
 
 impl TileLine {
-    fn from_obj(obj: OamEntry, is_2x: bool) -> Self {
-        let (palette, bank) = if is_2x {
+    fn from_obj(obj: OamEntry, is_cgb: bool) -> Self {
+        let (palette, bank) = if is_cgb {
             (obj.attrs.cgb_palette, obj.attrs.bank)
         } else {
             (obj.attrs.dmg_palette, 0)
@@ -458,12 +448,12 @@ impl TileLine {
         }
     }
 
-    fn from_tilemap(vram: &VramArray, tile_map: u8, tx: u8, ty: u8, is_2x: bool) -> Self {
+    fn from_tilemap(vram: &VramArray, tile_map: u8, tx: u8, ty: u8, is_cgb: bool) -> Self {
         // Tile map is in Bank-0 and attributes in Bank-1 of VRAM.
         let addr = tile_id_vram_addr(tile_map, tx, ty);
         let id = vram[0][addr];
         // If in non-CGB mode disable attributes to emulate the same.
-        let attrs = BgMapAttr::new(if is_2x { vram[1][addr] } else { 0 });
+        let attrs = BgMapAttr::new(if is_cgb { vram[1][addr] } else { 0 });
 
         Self {
             id,

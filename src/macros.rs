@@ -52,7 +52,7 @@ macro_rules! bit_fields {
             #[allow(unused)]
             $vis fn read(&self) -> $utype {
                 crate::macros::bit_fields!(@pack
-                    $(crate::macros::prefix_field!(self, $fields) ; $widths),+
+                    $(crate::macros::bit_fields!(@prefix self, $fields) ; $widths),+
                 )
 
             }
@@ -60,7 +60,7 @@ macro_rules! bit_fields {
             $vis fn write(&mut self, v: $utype) {
                 crate::macros::bit_fields!(@unpack
                     v,
-                    $(crate::macros::prefix_field!(self, $fields) ; $widths),+
+                    $(crate::macros::bit_fields!(@prefix self, $fields) ; $widths),+
                 );
             }
         }
@@ -79,11 +79,8 @@ macro_rules! bit_fields {
         crate::macros::bit_fields!(@pack $val ; $w)
         | (crate::macros::bit_fields!(@pack $($vals ; $ws),+) << $w)
     };
-}
 
-/// Concatenates `prefix` with `name` using a dot(`.`).
-macro_rules! prefix_field {
-    ($prefix:ident, $name:ident) => {
+    (@prefix $prefix:ident, $name:ident) => {
         $prefix.$name
     };
 }
@@ -94,7 +91,7 @@ macro_rules! prefix_field {
 ///
 /// If the value is contained in a range then the range offset value
 /// =`match_var - *range.start()` is assigned to `bind_name` which is
-/// accessible inside the action block and the associated block is run.
+/// accessible inside the associated action block.
 ///
 /// At the end a catch all arm must be present, like so: `_ => { ... }`.
 ///
@@ -123,18 +120,16 @@ macro_rules! match_range {
     };
 }
 
-/// Each `range` should have a method `contains(&value) -> bool` for deciding
-/// if the value falls withing the range.  
-macro_rules! in_ranges {
-    ($val:expr, $rng:expr) => {
-        $rng.contains(&$val)
-    };
-    ($val:expr, $rng:expr, $($rngs:expr),+) => {
-        $rng.contains(&$val) || in_ranges!($val, $($rngs),+)
+macro_rules! either {
+    ($cond:expr, $val_t:expr, $val_f:expr) => {
+        if $cond {
+            $val_t
+        } else {
+            $val_f
+        }
     };
 }
 
 pub(crate) use bit_fields;
-pub(crate) use in_ranges;
+pub(crate) use either;
 pub(crate) use match_range;
-pub(crate) use prefix_field;

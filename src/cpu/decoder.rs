@@ -1,5 +1,5 @@
 use crate::cpu::isa::{Instr, Opcode, Operand};
-use crate::mem::Mmu;
+use crate::mmu::Mmu;
 
 use super::table;
 
