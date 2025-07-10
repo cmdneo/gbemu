@@ -71,7 +71,7 @@ impl Cartidge {
         eprintln!("MBC   : {kind:?}");
         eprintln!("RAM   : {} KiB", ram_banks * 8);
         eprintln!("ROM   : {} KiB", rom_banks * 16);
-        eprintln!("-----------------------------------");
+        eprintln!();
 
         Ok(Self {
             is_cgb,

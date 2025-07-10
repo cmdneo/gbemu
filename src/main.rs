@@ -32,5 +32,26 @@ fn main() {
     };
 
     let mut gui = gui::EmulatorGui::new(emu);
+
+    eprint_help_text();
     gui.main_loop();
+    eprintln!("\nQuit.");
+}
+
+fn eprint_help_text() {
+    eprintln!("--------Emulator Keybindings--------");
+    eprintln!("START  : backspace");
+    eprintln!("SELECT : return");
+    eprintln!("A      : Z");
+    eprintln!("B      : X");
+    eprintln!("UP     : W/↑");
+    eprintln!("DOWN   : S/↓");
+    eprintln!("LEFT   : A/←");
+    eprintln!("RIGHT  : D/→");
+    eprintln!();
+
+    eprintln!("--------Control Keybindings---------");
+    eprintln!("Change palette  : space");
+    eprintln!("Exit emulator   : escape");
+    eprintln!();
 }

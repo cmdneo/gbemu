@@ -39,9 +39,11 @@ struct EmulatorAudio {
 
 impl audio::AudioCallback<f32> for EmulatorAudio {
     fn callback(&mut self, stream: &mut audio::AudioStream, _requested: i32) {
-        self.audio_ctrl_tx
-            .send(calc_sampling_period(stream))
-            .unwrap();
+        // We need to adjust sampling period dynamically because the software
+        // cannot exactly match the hardware timing and fractional periods are
+        // not supported by the emulator. calc_sampling_period does that.
+        let period = calc_sampling_period(stream);
+        self.audio_ctrl_tx.send(period).unwrap();
         stream
             .put_data_f32(&self.audio_data_rx.recv().unwrap())
             .unwrap();
@@ -128,6 +130,7 @@ impl EmulatorGui {
         let Reply::Frequency(freq) = self.recieve() else {
             panic!("invalid reply")
         };
+        eprint!("\r=> {:.3} MHz", freq / 1e6);
     }
 
     fn update_keystate(&self, event_pump: &EventPump) {
@@ -193,21 +196,23 @@ fn calc_sampling_period(stream: &audio::AudioStream) -> u32 {
         panic!("cannot retrieve audio format")
     };
 
-    // We need to adjust sampling period dynamically because the software
-    // cannot exactly match the hardware timing and fractional periods are
-    // not supported by the emulator.
-    // The period is increased from the ideal by the amount equal to how much
-    // times playback exceeds MAX_PLAYBACK, this is simple and works.
     const MAX_PLAYBACK_IN_SECS: f64 = 0.01;
     let nsamples = stream.queued_bytes().unwrap() / channels / size_of::<f32>() as i32;
     let playback = nsamples as f64 / freq as f64;
-    let period = FREQUENCY as f64 / freq as f64 + playback / MAX_PLAYBACK_IN_SECS;
+    let exceeds = playback / MAX_PLAYBACK_IN_SECS;
+    let period = FREQUENCY as f64 / freq as f64;
 
     // Warn and stop sampling if queueing up too many
-    // samples which will cause high memory usage and audio lag/latency.
+    // samples which will cause high memory usage and audio latency.
     if playback > 10.0 * MAX_PLAYBACK_IN_SECS {
         eprintln!("warning: audio lag too many samples queued");
         return 0;
     }
-    period.round() as u32
+
+    // Period is increased from the ideal by how many times playback
+    // exceeds MAX_PLAYBACK, this is simple and handles overruns.
+    // We floor the period so that we sample at a slightly faster rate to
+    // avoid underruns which causes audible pops and choppy audio.
+    // For the current AUDIO_CONFIG this method works fine, change if needed.
+    (period + exceeds).floor() as u32
 }
