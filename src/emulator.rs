@@ -12,13 +12,6 @@ use crate::{
     EmulatorErr,
 };
 
-/// Number of CPU steps to run in one go.
-// Max steps run at once must be less than VBLANK interval,
-// because we capture a frame for rendering only in VBLANK.
-// VBLANK is 4560 dots and the longest it takes for a step is 24 dots.
-// So number of steps should be always less than 190 (=4560/24).
-const STEPS_PER_BURST: usize = 150;
-
 pub struct Emulator {
     cpu: Cpu,
     /// Total T-cycles ticked since last `timer_reset`.
@@ -74,7 +67,12 @@ impl Emulator {
         // self.cpu.trace_execution = true;
 
         while self.is_running {
-            for _ in 0..STEPS_PER_BURST {
+            // Run multiple steps in one burst for efficiency. Try not to
+            // runmore than 0.005 seconds worth of cycles at once, otherwise,
+            // requests for audio/video frames might get blocked for too long.
+            // Max dots an instruction can take is 24 dots, thus:
+            // 0.005 * FREQUENCY(=2^22) / 24 = 873, so run less than 873 steps.
+            for _ in 0..777 {
                 self.step();
             }
 
