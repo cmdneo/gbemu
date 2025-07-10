@@ -76,8 +76,8 @@ impl Emulator {
                 self.step();
             }
 
-            assert!(self.handle_audio_flow(&audio_ctrl_rx, &audio_data_tx));
-            assert!(self.handle_msgs(&request_rx, &reply_tx));
+            self.handle_audio_flow(&audio_ctrl_rx, &audio_data_tx);
+            self.handle_msgs(&request_rx, &reply_tx);
             self.manage_sleep_timer();
         }
     }
@@ -95,12 +95,11 @@ impl Emulator {
     }
 
     /// Handle user messages and respond to them(if required).
-    /// Returns false if send/recieve failed, otherwise true.
-    fn handle_msgs(&mut self, request_rx: &Receiver<Request>, reply_tx: &Sender<Reply>) -> bool {
+    fn handle_msgs(&mut self, request_rx: &Receiver<Request>, reply_tx: &Sender<Reply>) {
         let msg = match request_rx.try_recv() {
             Ok(msg) => msg,
-            Err(TryRecvError::Empty) => return true,
-            Err(TryRecvError::Disconnected) => return false,
+            Err(TryRecvError::Empty) => return,
+            Err(e) => panic!("message channel: {e:?}"),
         };
 
         match msg {
@@ -108,30 +107,28 @@ impl Emulator {
 
             Request::UpdateButtonState(btns) => {
                 let (dpad, btns) = btns.to_internal_repr();
-                self.cpu.mmu.update_joypad(dpad, btns);
-                true
+                self.cpu.mmu.update_joypad(dpad, btns)
             }
 
-            Request::CyclePalette => {
-                self.cpu.mmu.ppu.cycle_palette(1);
-                true
-            }
+            Request::CyclePalette => self.cpu.mmu.ppu.cycle_palette(1),
 
             Request::GetVideoFrame => {
                 let mut f = Box::new(VideoFrame::default());
                 self.cpu.mmu.ppu.copy_frame(f.as_mut());
-                reply_tx.send(Reply::VideoFrame(f)).is_ok()
+                reply_tx.send(Reply::VideoFrame(f)).unwrap()
             }
 
             Request::GetTitle => reply_tx
                 .send(Reply::Title(self.cpu.mmu.cart.title.clone()))
-                .is_ok(),
+                .unwrap(),
 
-            Request::GetFrequency => reply_tx.send(Reply::Frequency(self.real_frequency)).is_ok(),
+            Request::GetFrequency => reply_tx
+                .send(Reply::Frequency(self.real_frequency))
+                .unwrap(),
 
             Request::Shutdown => {
                 self.is_running = false;
-                reply_tx.send(Reply::ShuttingDown).is_ok()
+                reply_tx.send(Reply::ShuttingDown).unwrap()
             }
 
             Request::DebuggerStart => todo!(),
@@ -144,20 +141,22 @@ impl Emulator {
         &mut self,
         audio_ctrl_rx: &Receiver<u32>,
         audio_data_tx: &Sender<Box<[f32]>>,
-    ) -> bool {
-        match audio_ctrl_rx.try_recv() {
-            Ok(period) => audio_data_tx
-                .send(
-                    self.cpu
-                        .mmu
-                        .apu
-                        .start_new_sampling(period)
-                        .into_boxed_slice(),
-                )
-                .is_ok(),
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => false,
-        }
+    ) {
+        let period = match audio_ctrl_rx.try_recv() {
+            Ok(p) => p,
+            Err(TryRecvError::Empty) => return,
+            Err(e) => panic!("audio channel: {e:?}"),
+        };
+
+        audio_data_tx
+            .send(
+                self.cpu
+                    .mmu
+                    .apu
+                    .start_new_sampling(period)
+                    .into_boxed_slice(),
+            )
+            .unwrap();
     }
 
     /// Initialize the registers and state, make it ready for execution.
