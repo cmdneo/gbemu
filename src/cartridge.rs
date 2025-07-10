@@ -43,25 +43,12 @@ impl Cartidge {
     /// Copy the rom and create a new cartridge.
     pub(crate) fn new(rom: Vec<u8>) -> Result<Self, EmulatorErr> {
         let is_cgb = matches!(rom[CART_CGB_FLAG], CART_CGB_ONLY);
-        if is_cgb {
-            return Err(EmulatorErr::NotImplemented);
-        }
-
+        let kind = cart_mbc_type(rom[CART_TYPE_FLAG])?;
         let title = rom.get(CART_TITLE).map_or(String::new(), |raw| {
             String::from_utf8_lossy(raw).to_string()
         });
 
-        let kind = cart_mbc_type(rom[CART_TYPE_FLAG])?;
-        match kind {
-            MbcType::None | MbcType::Mbc1 => (),
-            _ => return Err(EmulatorErr::NotImplemented),
-        }
-
         let rom_banks = cart_rom_banks(rom[CART_ROM_FLAG])?;
-        if rom_banks * SIZE_ROM_BANK != rom.len() {
-            return Err(EmulatorErr::RomSizeMismatch);
-        }
-
         let ram_banks = cart_ram_banks(rom[CART_RAM_FLAG])?;
         let ram = vec![0; SIZE_EXT_RAM_BANK * ram_banks];
 
@@ -72,6 +59,18 @@ impl Cartidge {
         eprintln!("RAM   : {} KiB", ram_banks * 8);
         eprintln!("ROM   : {} KiB", rom_banks * 16);
         eprintln!();
+
+        // Return error after printing cartridge info, useful for debugging.
+        if is_cgb {
+            return Err(EmulatorErr::NotImplemented);
+        }
+        match kind {
+            MbcType::None | MbcType::Mbc1 => (),
+            _ => return Err(EmulatorErr::NotImplemented),
+        }
+        if rom_banks * SIZE_ROM_BANK != rom.len() {
+            return Err(EmulatorErr::RomSizeMismatch);
+        }
 
         Ok(Self {
             is_cgb,
