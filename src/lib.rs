@@ -20,6 +20,8 @@ pub use msg::{ButtonState, Color, Reply, Request, VideoFrame};
 /// Emulator error type.
 #[derive(Debug)]
 pub enum EmulatorErr {
+    SaveFileCorrupted,
+    InvalidRomSize,
     RomSizeMismatch,
     UnknownRomSize,
     UnknownRamSize,

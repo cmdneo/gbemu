@@ -1,19 +1,19 @@
+use bincode::{Decode, Encode};
+
 use crate::{
     info::*,
     macros::{either, match_range},
     mask_usize, EmulatorErr,
 };
 
-const ROM_ADDR_MASK: usize = SIZE_ROM_BANK - 1;
-const RAM_ADDR_MASK: usize = SIZE_EXT_RAM_BANK - 1;
-
+#[derive(Encode, Decode)]
 pub(crate) struct Cartidge {
     pub(crate) is_cgb: bool,
     pub(crate) title: String,
 
+    pub(crate) rom: Box<[u8]>,
+    pub(crate) ram: Box<[u8]>,
     kind: MbcType,
-    rom: Box<[u8]>,
-    ram: Box<[u8]>,
     rom0_off: usize,
     rom1_off: usize,
     ram_off: usize,
@@ -25,7 +25,7 @@ pub(crate) struct Cartidge {
     bank_hi: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Encode, Decode)]
 enum MbcType {
     None,
     Mbc1,
@@ -42,6 +42,10 @@ enum MbcType {
 impl Cartidge {
     /// Copy the rom and create a new cartridge.
     pub(crate) fn new(rom: Vec<u8>) -> Result<Self, EmulatorErr> {
+        if rom.len() % SIZE_ROM_BANK != 0 {
+            return Err(EmulatorErr::InvalidRomSize);
+        }
+
         let is_cgb = matches!(rom[CART_CGB_FLAG], CART_CGB_ONLY);
         let kind = cart_mbc_type(rom[CART_TYPE_FLAG])?;
         let title = rom.get(CART_TITLE).map_or(String::new(), |raw| {
@@ -90,16 +94,16 @@ impl Cartidge {
 
     pub(crate) fn read(&self, addr: usize) -> u8 {
         match_range! { a@addr {
-            ADDR_EXT_RAM => { self.read_ram((addr & RAM_ADDR_MASK) + self.ram_off) }
-            ADDR_ROM0 => { self.read_rom((addr & ROM_ADDR_MASK) + self.rom0_off) }
-            ADDR_ROM1 => { self.read_rom((addr & ROM_ADDR_MASK) + self.rom1_off) }
+            ADDR_EXT_RAM => { self.read_ram((addr % SIZE_EXT_RAM_BANK) + self.ram_off) }
+            ADDR_ROM0 => { self.read_rom((addr % SIZE_ROM_BANK) + self.rom0_off) }
+            ADDR_ROM1 => { self.read_rom((addr % SIZE_ROM_BANK) + self.rom1_off) }
             _ => { 0xFF }
         }}
     }
 
     pub(crate) fn write(&mut self, addr: usize, val: u8) {
         if ADDR_EXT_RAM.contains(&addr) {
-            self.write_ram((addr & RAM_ADDR_MASK) + self.ram_off, val);
+            self.write_ram((addr % SIZE_EXT_RAM_BANK) + self.ram_off, val);
             return;
         }
 

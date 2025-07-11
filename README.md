@@ -1,5 +1,4 @@
-GBemu
-=====
+# GBemu
 
 A gameboy emulator written in the Rust programming language.
 It does not aim for perfect accuracy but can run most ROMs just fine.
@@ -8,18 +7,17 @@ It passes Blargg's `cpu_instr.gb` and `instr_timing.gb` test ROMs' tests.
 
 Features:
 
+- Save and resume emulator state
 - Audio support (APU implementation)
 - Mostly accurate rendering
 - Color palettes for monochrome games
 - MBC1 implementation (others to be implemented)
 
-Screenshots
------------
+## Screenshots
 
 ![gbemu running the Tetris ROM using a color palette](tetris_gbrom.png)
 
-Keybindings
------------
+## Keybindings
 
 | Gameboy Key | Keyboard Key |
 | ----------- | ------------ |
@@ -37,8 +35,7 @@ Keybindings
 | Change palette | space        |
 | Exit emulator  | escape       |
 
-Building
---------
+## Building
 
 It depends on [SDL3](https://wiki.libsdl.org/SDL3/FrontPage) for graphics and
 sound, so install it first before building.  
@@ -56,14 +53,42 @@ After installing SDL3 build using cargo:
 cargo build --release
 ```
 
-Run using cargo:
+## Usage
+
+Use `gbemu --help` to show a list of commands and help text.  
+Use `gbemu <command> --help` to show help related to a specific command.
+
+Summary of available commands:
+
+| Command       | Arguments                | Options                 |
+| ------------- | ------------------------ | ----------------------- |
+| `run`         | `<ROM_FILE>`             | `--save-to <SAVE_FILE>` |
+| `resume`      | `<SAVE_FILE>`            | `--save-to <SAVE_FILE>` |
+|               |                          | `--no-save`             |
+| `extract-rom` | `<SAVE_FILE> <ROM_FILE>` |                         |
+|               |                          |                         |
+
+### Examples
+
+Run a ROM with save on exit:
 
 ```bash
-cargo run --release -- <ROM-path>
+gbemu run --save-to game.save game.gb
 ```
 
-TODOs
------
+Resume a saved game, new state will be saved into the same file on exit:
+
+```bash
+gbemu resume game.save
+```
+
+Resume a saved game but save to a different file on exit, leaving the original save file intact:
+
+```bash
+gbemu resume --save-to another-game.save game.save
+```
+
+## TODOs
 
 - Implement remaining MBCs
 - Implement CGB mode

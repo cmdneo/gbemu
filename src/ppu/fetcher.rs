@@ -1,13 +1,12 @@
-use std::{cmp::max, collections::VecDeque};
-
 use crate::{info::*, macros::bit_fields, regs::LcdCtrl};
-
-type VramArray = [[u8; SIZE_VRAM_BANK]; VRAM_BANKS];
+use bincode::{Decode, Encode};
+use std::{cmp::max, collections::VecDeque};
 
 /// Fetch a line of pixels.
 /// Put scanned OAM objects in `objects` sorted by OAM index.
 /// Use `is_done` to check if line has been constructed and get the
 /// pixels from `screen_line`.
+#[derive(Encode, Decode)]
 pub(crate) struct LineFetcher {
     pub(super) is_cgb: bool,
     /// Objects(sprites) which lie on the current scan line. Max 10.
@@ -17,7 +16,8 @@ pub(crate) struct LineFetcher {
     pub(crate) screen_line: [Pixel; SCREEN_RESOLUTION.0],
 
     // Registers and memory owned by it.
-    pub(crate) vram: VramArray,
+    pub(crate) vram: VramBanks,
+    #[bincode(with_serde)]
     pub(crate) lcdc: LcdCtrl,
     pub(crate) scx: u8,
     pub(crate) scy: u8,
@@ -49,7 +49,7 @@ pub(crate) struct LineFetcher {
     bg_tile: TileLine,
 }
 
-#[derive(Default)]
+#[derive(Default, Encode, Decode)]
 enum FetcherState {
     #[default]
     GetTileId,
@@ -58,8 +58,10 @@ enum FetcherState {
     PushPixels,
 }
 
+type VramBanks = [[u8; SIZE_VRAM_BANK]; VRAM_BANKS];
+
 /// One processed pixel with information for constructing its color.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Encode, Decode)]
 pub(crate) struct Pixel {
     /// 2-bit color index into palette.
     pub(crate) color_id: u8,
@@ -75,7 +77,7 @@ pub(crate) struct Pixel {
 // Representation:
 // Byte-0: Y-position, Byte-1: X-posiiton, Byte-2: Tile-index
 // Byte-3: See OamAttrs.
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Clone, Copy, Encode, Decode)]
 pub(crate) struct OamEntry {
     /// Object vertical position on screen + 16.
     pub(crate) ypos: u8,
@@ -84,6 +86,7 @@ pub(crate) struct OamEntry {
     /// Tile ID
     pub(crate) tile_id: u8,
     /// Object flags and attributes
+    #[bincode(with_serde)]
     attrs: OamAttrs,
 }
 
@@ -389,7 +392,7 @@ impl LineFetcher {
 
 bit_fields! {
     /// OAM attribute.
-    #[derive(Debug)]
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct OamAttrs<u8> {
         cgb_palette: 3,
         bank: 1,
@@ -416,7 +419,7 @@ bit_fields! {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Encode, Decode)]
 struct TileLine {
     id: u8,
     low: u8,
@@ -448,7 +451,7 @@ impl TileLine {
         }
     }
 
-    fn from_tilemap(vram: &VramArray, tile_map: u8, tx: u8, ty: u8, is_cgb: bool) -> Self {
+    fn from_tilemap(vram: &VramBanks, tile_map: u8, tx: u8, ty: u8, is_cgb: bool) -> Self {
         // Tile map is in Bank-0 and attributes in Bank-1 of VRAM.
         let addr = tile_id_vram_addr(tile_map, tx, ty);
         let id = vram[0][addr];
@@ -466,7 +469,7 @@ impl TileLine {
     }
 
     /// Read a line of tile data.
-    fn read_in_line(&mut self, vram: &VramArray, addr_mode: u8) {
+    fn read_in_line(&mut self, vram: &VramBanks, addr_mode: u8) {
         let yoffset = if self.yflip { 7 - self.line } else { self.line } as usize;
 
         let addr = tile_data_vram_addr(addr_mode, self.id);

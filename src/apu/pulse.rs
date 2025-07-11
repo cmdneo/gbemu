@@ -2,15 +2,20 @@ use crate::{counter::Counter, regs};
 
 use super::parts;
 
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct PulseChannel {
     pub(crate) on: bool,
     pub(crate) output: u8,
 
+    #[bincode(with_serde)]
     pub(crate) nx0: regs::AudioNx0,
+    #[bincode(with_serde)]
     pub(crate) nx1: regs::AudioNx1,
+    #[bincode(with_serde)]
     pub(crate) nx2: regs::AudioNx2,
+    #[bincode(with_serde)]
     pub(crate) nx3: regs::AudioNx3,
+    #[bincode(with_serde)]
     pub(crate) nx4: regs::AudioNx4,
 
     /// Channel-1 has sweep and Channel-2 does not.

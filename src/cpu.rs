@@ -2,6 +2,7 @@ mod decoder;
 mod isa;
 mod table;
 
+use bincode::{Decode, Encode};
 use std::num::Wrapping;
 
 use crate::{info, log, macros::bit_fields, mask_u16, mmu::Mmu, regs::Key1};
@@ -10,6 +11,12 @@ use isa::{Cond, Instr, Opcode, Operand, Reg};
 /// Gameboy CPU emulator with support for double speed mode.  
 /// Instruction semantics are implemented as specified in:
 /// https://rgbds.gbdev.io/docs/v0.8.0/gbz80.7
+///
+/// We support saving and restoring the emulator state using serde.
+/// Only the fields revelant to the emulator are saved, fields which
+/// hold temporary data for presentation(audio samples & video frames)
+/// purposes are not saved.
+#[derive(Encode, Decode)]
 pub struct Cpu {
     // CPU owns the mmu and mmu owns rest of the system.
     pub(crate) mmu: Mmu,
@@ -20,6 +27,7 @@ pub struct Cpu {
     // Machine registers
     pub(crate) pc: Wrapping<u16>,
     pub(crate) sp: Wrapping<u16>,
+    #[bincode(with_serde)]
     flags: Flags,
     a: u8,
     b: u8,
@@ -35,7 +43,7 @@ pub struct Cpu {
     set_ime_later: bool,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum CpuState {
     #[default]
     Running,
@@ -50,6 +58,7 @@ pub(crate) enum CpuState {
 }
 
 bit_fields! {
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Flags<u8> {
         _0: 4,
         c:1,

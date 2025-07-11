@@ -1,4 +1,4 @@
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct Counter {
     ticks: u32,
     period: u32,

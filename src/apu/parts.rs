@@ -1,3 +1,5 @@
+use bincode::{Decode, Encode};
+
 use crate::{
     counter::Counter,
     regs::{AudioN43, AudioNx0, AudioNx2, AudioNx3, AudioNx4},
@@ -10,7 +12,7 @@ const LENGTH_BASE_PERIOD: u32 = 2; // APU-ticks
 const ENVELOPE_BASE_PERIOD: u32 = 8; // APU-ticks
 const PWM_WAVE_SAMPLES: [u8; 4] = [0b00000001, 0b00000011, 0b00001111, 0b00111111];
 
-#[derive(Default)]
+#[derive(Default, Encode, Decode)]
 pub(crate) struct VolumeEnvelope {
     volume: u8,
     active: bool,
@@ -47,7 +49,7 @@ impl VolumeEnvelope {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Encode, Decode)]
 pub(crate) struct LengthTimer {
     active: bool,
     counter: Counter,
@@ -76,7 +78,7 @@ impl LengthTimer {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Encode, Decode)]
 pub(crate) struct PeriodDivider {
     wave_sample_count: u8,
     dots_per_tick: u32,

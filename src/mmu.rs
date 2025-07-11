@@ -1,3 +1,5 @@
+use bincode::{Decode, Encode};
+
 use crate::{
     apu::Apu,
     cartridge::Cartidge,
@@ -12,6 +14,7 @@ use crate::{
 
 /// The memory sub-system, contains the `Cartridge`, `Ppu`, `Timer`, `Serial`
 /// and some registers, other registers are owned by components they belong to.
+#[derive(Encode, Decode)]
 pub(crate) struct Mmu {
     pub(crate) ppu: Ppu,
     pub(crate) apu: Apu,
@@ -20,11 +23,17 @@ pub(crate) struct Mmu {
     pub(crate) cart: Cartidge,
 
     // Registers and memory owned by it.
+    #[bincode(with_serde)]
     pub(crate) key1: Key1,
+    #[bincode(with_serde)]
     pub(crate) iflag: IntrBits,
+    #[bincode(with_serde)]
     pub(crate) ienable: IntrBits,
+    #[bincode(with_serde)]
     pub(crate) joypad: JoyPad,
+    #[bincode(with_serde)]
     pub(crate) bgpi: CgbPaletteIndex,
+    #[bincode(with_serde)]
     pub(crate) obpi: CgbPaletteIndex,
     pub(crate) opri: u8,
     pub(crate) dma: u8,
@@ -36,7 +45,9 @@ pub(crate) struct Mmu {
     wram: [[u8; SIZE_WRAM_BANK]; WRAM_BANKS],
     hram: [u8; SIZE_HRAM],
 
+    #[bincode(with_serde)]
     dpad: DPad,
+    #[bincode(with_serde)]
     buttons: ActionButtons,
 }
 

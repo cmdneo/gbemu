@@ -14,9 +14,13 @@ use crate::{counter::Counter, regs};
 /// Audio Processing Unit, generates samples and sends it to the
 /// audio player(backend).  
 /// I cannot believe that this works... :').
+#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct Apu {
+    #[bincode(with_serde)]
     pub(crate) nr52: regs::AudioNr52,
+    #[bincode(with_serde)]
     pub(crate) nr51: regs::AudioNr51,
+    #[bincode(with_serde)]
     pub(crate) nr50: regs::AudioNr50,
 
     pub(crate) ch1: PulseChannel,

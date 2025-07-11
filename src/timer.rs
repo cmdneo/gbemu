@@ -1,10 +1,11 @@
 use crate::regs::TimerCtrl;
 
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct Timer {
     pub(crate) is_2x: bool,
 
     // Registers owned by it.
+    #[bincode(with_serde)]
     pub(crate) tac: TimerCtrl,
     pub(crate) tma: u8,
     pub(crate) tima: u8,

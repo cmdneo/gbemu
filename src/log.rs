@@ -10,6 +10,6 @@ pub(crate) fn warn(m: &str) {
     eprintln!("[WARN] {m}.")
 }
 
-// pub(crate) fn error(m: &str) {
-//     eprintln!("[ERROR] {m}.")
-// }
+pub(crate) fn error(m: &str) {
+    eprintln!("[ERROR] {m}.")
+}

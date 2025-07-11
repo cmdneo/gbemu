@@ -14,7 +14,9 @@ pub enum Request {
     /// Get clock frequency
     GetFrequency,
     /// Request a shutdown and wait for [Reply::ShuttingDown] before exiting.
-    Shutdown,
+    Shutdown {
+        save_state: bool,
+    },
 
     // TODO For debugging the CPU and execution.
     DebuggerStart,
@@ -29,16 +31,16 @@ pub enum Reply {
     Title(String),
     /// Current clock frequency.
     Frequency(f64),
-    /// Shutdown request acknowledgement message.
-    ShuttingDown,
+    /// Shutdown request acknowledgement message with saved state (if requested).
+    ShuttingDown(Option<Box<[u8]>>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct VideoFrame {
     pixels: [[Color; SCREEN_RESOLUTION.0]; SCREEN_RESOLUTION.1],
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, bincode::Encode, bincode::Decode)]
 pub struct Color {
     pub r: u8,
     pub g: u8,

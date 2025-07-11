@@ -2,13 +2,14 @@ use std::io::Write;
 
 use crate::{counter::Counter, regs::SerialCtrl};
 
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct Serial {
     pub(crate) debug_serial: bool,
     pub(crate) is_2x: bool,
     is_cgb: bool,
 
     // Registers owned by it
+    #[bincode(with_serde)]
     pub(crate) sc: SerialCtrl,
     pub(crate) sb: u8,
 

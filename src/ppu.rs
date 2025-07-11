@@ -1,16 +1,18 @@
 pub(crate) mod fetcher;
 mod palettes;
 
-use fetcher::{LineFetcher, OamEntry, Pixel};
+use bincode::{Decode, Encode};
 
 use crate::{
     info::*,
     msg::{Color, VideoFrame},
     regs::{CgbColor, IntrBits, LcdStat},
 };
+use fetcher::{LineFetcher, OamEntry, Pixel};
 
 // TODO Implement CGB mode rendering and fix issues related to it.
 
+#[derive(Encode, Decode)]
 pub(crate) struct Ppu {
     pub(crate) fetcher: LineFetcher,
 
@@ -19,6 +21,7 @@ pub(crate) struct Ppu {
     // CGB color palettes are stored in a seperate RAM accesed indirectly.
     pub(crate) bg_palette: [u8; SIZE_CGB_PALETTE],
     pub(crate) obj_palette: [u8; SIZE_CGB_PALETTE],
+    #[bincode(with_serde)]
     pub(crate) stat: LcdStat,
     pub(crate) ly: u8,
     pub(crate) lyc: u8,
@@ -26,14 +29,18 @@ pub(crate) struct Ppu {
     pub(crate) obp0: u8,
     pub(crate) obp1: u8,
 
+    /// Frame containing the screen pixels with double bufferering.
+    /// Double buffer is required for avoiding choppiness/tearing while drawing.
+    // We do not need to save it as it is large(~140KB) and is constructed from
+    // PPU state for presentation. Set to None before encoding to avoid saving it.
+    frame: Option<Box<[VideoFrame; 2]>>,
+    frame_idx: usize,
+
     /// ID for mapping monochrome DMG colors to RGB colors.
     dmg_palette_id: usize,
     /// Current PPU mode updates to it are carried to STAT register.
+    #[bincode(with_serde)]
     mode: PpuMode,
-    /// Frame containing the screen pixels with double bufferering.
-    // Double buffer is required for avoiding choppiness/tearing while drawing.
-    frame: [VideoFrame; 2],
-    frame_idx: usize,
     /// Amount of dots left, which determines how much to advance.
     dots_left: u32,
     /// Number of dots consumed for the current scan-line `LY`.
@@ -46,7 +53,7 @@ const PPU_DRAW_LINES: u32 = SCREEN_RESOLUTION.1 as u32;
 const PPU_HSCAN_DOTS: u32 = 456;
 const PPU_VBLANK_LINES: u32 = 10;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 enum PpuMode {
     HBlank = MODE_HBLANK,
@@ -70,10 +77,11 @@ impl Ppu {
             obp0: 0,
             obp1: 0,
 
+            frame: None,
+            frame_idx: 0,
+
             dmg_palette_id: palettes::DEFAULT_MONOCHROME,
             mode: PpuMode::Scan,
-            frame: Default::default(),
-            frame_idx: 0,
             dots_in_line: 0,
             dots_left: 0,
             stat_intr_line: false,
@@ -118,7 +126,12 @@ impl Ppu {
     }
 
     pub(crate) fn copy_frame(&self, frame: &mut VideoFrame) {
-        *frame = self.frame[1 - self.frame_idx].clone();
+        *frame = self.frame.as_ref().unwrap()[1 - self.frame_idx].clone();
+    }
+
+    /// Removes by replacing it with None so that it not encoded saving space.
+    pub(crate) fn remove_frame(&mut self) {
+        self.frame = None;
     }
 
     fn reset(&mut self) {
@@ -167,12 +180,16 @@ impl Ppu {
         self.fetcher.tick_2_dots();
 
         if self.fetcher.is_done() {
+            if self.frame.is_none() {
+                self.frame = Some(Box::default());
+            }
+
             // Copy all pixel colors to frame if done.
             for i in 0..SCREEN_RESOLUTION.0 {
                 let px = self.fetcher.screen_line[i];
                 let color = self.pixel_to_color(px);
 
-                self.frame[self.frame_idx].set(i, self.ly as usize, color);
+                self.frame.as_mut().unwrap()[self.frame_idx].set(i, self.ly as usize, color);
             }
 
             PpuMode::HBlank

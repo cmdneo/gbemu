@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 sdl3 = "0.14.35"
+serde = { version = "1.0.219", features = ["derive"] }
+bincode = { version = "2.0.1", features = ["serde"] }
+clap = { version = "4.5.41", features = ["derive"] }
 
 [profile.dev]
 opt-level = 1

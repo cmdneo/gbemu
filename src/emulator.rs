@@ -7,6 +7,7 @@ use std::{
 use crate::{
     cartridge::Cartidge,
     cpu::Cpu,
+    log,
     mmu::Mmu,
     msg::{Reply, Request, VideoFrame},
     EmulatorErr,
@@ -20,11 +21,13 @@ pub struct Emulator {
     start_time: Instant,
     /// Actual clock frequency achieved by the emulator
     real_frequency: f64,
+    init_required: bool,
     is_running: bool,
+    save_state: bool,
 }
 
 impl Emulator {
-    pub fn new(rom: Vec<u8>) -> Result<Self, EmulatorErr> {
+    pub fn from_rom(rom: Vec<u8>) -> Result<Self, EmulatorErr> {
         let cartidge = Cartidge::new(rom)?;
         let mmu = Mmu::new(cartidge);
         let cpu = Cpu::new(mmu);
@@ -34,8 +37,26 @@ impl Emulator {
             tcycles: 0,
             real_frequency: 0.0,
             start_time: Instant::now(),
+            init_required: true,
             is_running: false,
+            save_state: false,
         })
+    }
+
+    pub fn from_saved(saved: Vec<u8>) -> Result<Self, EmulatorErr> {
+        Ok(Self {
+            cpu: load_save_file(&saved)?,
+            tcycles: 0,
+            real_frequency: 0.0,
+            start_time: Instant::now(),
+            init_required: false,
+            is_running: false,
+            save_state: false,
+        })
+    }
+
+    pub fn rom_from_saved(saved: Vec<u8>) -> Result<Box<[u8]>, EmulatorErr> {
+        Ok(load_save_file(&saved)?.mmu.cart.rom.clone())
     }
 
     /// Run it in a new thread and use channels to communicate with it
@@ -61,10 +82,11 @@ impl Emulator {
             panic!("Emulator not started yet, send [Request::Start] first.");
         }
 
-        self.init();
+        if self.init_required {
+            self.init();
+        }
         self.reset_timers();
         self.is_running = true;
-        // self.cpu.trace_execution = true;
 
         while self.is_running {
             // Run multiple steps in one burst for efficiency. Try not to
@@ -80,6 +102,19 @@ impl Emulator {
             self.handle_msgs(&request_rx, &reply_tx);
             self.manage_sleep_timer();
         }
+
+        if !self.save_state {
+            reply_tx.send(Reply::ShuttingDown(None)).unwrap();
+            return;
+        }
+
+        // Remove video frame, clear audio samples and disable sampling before saving.
+        self.cpu.mmu.ppu.remove_frame();
+        self.cpu.mmu.apu.start_new_sampling(0);
+        let saved = bincode::encode_to_vec(&self.cpu, bincode::config::standard()).unwrap();
+        reply_tx
+            .send(Reply::ShuttingDown(Some(saved.into_boxed_slice())))
+            .unwrap();
     }
 
     /// Run a for a step each component.
@@ -126,9 +161,9 @@ impl Emulator {
                 .send(Reply::Frequency(self.real_frequency))
                 .unwrap(),
 
-            Request::Shutdown => {
+            Request::Shutdown { save_state } => {
+                self.save_state = save_state;
                 self.is_running = false;
-                reply_tx.send(Reply::ShuttingDown).unwrap()
             }
 
             Request::DebuggerStart => todo!(),
@@ -186,5 +221,15 @@ impl Emulator {
     fn reset_timers(&mut self) {
         self.tcycles = 0;
         self.start_time = Instant::now();
+    }
+}
+
+fn load_save_file(saved: &[u8]) -> Result<Cpu, EmulatorErr> {
+    match bincode::decode_from_slice(saved, bincode::config::standard()) {
+        Ok((cpu, _)) => Ok(cpu),
+        Err(e) => {
+            log::error(&format!("Savefile decoding error: {e:?}"));
+            Err(EmulatorErr::SaveFileCorrupted)
+        }
     }
 }

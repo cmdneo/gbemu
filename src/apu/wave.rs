@@ -1,16 +1,20 @@
+use super::parts;
 use crate::{info, regs};
 
-use super::parts;
-
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct WaveChannel {
     pub(crate) on: bool,
     pub(crate) output: u8,
 
+    #[bincode(with_serde)]
     pub(crate) n30: regs::AudioN30,
+    #[bincode(with_serde)]
     pub(crate) n31: regs::AudioN31,
+    #[bincode(with_serde)]
     pub(crate) n32: regs::AudioN32,
+    #[bincode(with_serde)]
     pub(crate) n33: regs::AudioNx3,
+    #[bincode(with_serde)]
     pub(crate) n34: regs::AudioNx4,
     pub(crate) wave_ram: [u8; info::SIZE_AUDIO_WAVE_RAM],
 

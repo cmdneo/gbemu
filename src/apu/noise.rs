@@ -2,14 +2,18 @@ use crate::{counter::Counter, regs};
 
 use super::parts;
 
-#[derive(Default)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct NoiseChannel {
     pub(crate) on: bool,
     pub(crate) output: u8,
 
+    #[bincode(with_serde)]
     pub(crate) n41: regs::AudioNx1,
+    #[bincode(with_serde)]
     pub(crate) n42: regs::AudioNx2,
+    #[bincode(with_serde)]
     pub(crate) n44: regs::AudioNx4,
+    #[bincode(with_serde)]
     n43: regs::AudioN43, // for detecting writes easily
 
     lsfr_bits: u16,

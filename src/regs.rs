@@ -1,4 +1,5 @@
 //! IO-port register structures for conveninet reading and writing.
+use serde::{Deserialize, Serialize};
 
 use crate::macros::bit_fields;
 
@@ -9,6 +10,7 @@ bit_fields! {
     ///
     /// Lower 4-bits are set as: `ActionButtons` for `select_buttons`
     /// and `Dpad` for `select_dpad`.
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct JoyPad<u8> {
         state: 4,
         select_dpad: 1,
@@ -17,6 +19,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct DPad<u8> {
         right: 1,
         left: 1,
@@ -26,6 +29,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct ActionButtons<u8> {
         a: 1,
         b: 1,
@@ -35,6 +39,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct SerialCtrl<u8> {
         clock_select: 1,
         clock_speed: 1,
@@ -44,7 +49,7 @@ bit_fields! {
 }
 
 bit_fields! {
-    #[derive(Debug)]
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct LcdCtrl<u8> {
         /// In non-CGB mode this overrides win_enable
         /// and has meaning `BG_and_window_enable`.
@@ -61,7 +66,7 @@ bit_fields! {
 }
 
 bit_fields! {
-    #[derive(Debug)]
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct LcdStat<u8> {
         ppu_mode: 2,
         ly_eq_lyc: 1,
@@ -75,6 +80,7 @@ bit_fields! {
 
 bit_fields! {
     /// Background/Object color palette index.
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct CgbPaletteIndex<u8> {
         addr: 6,
         _0: 1,
@@ -84,6 +90,7 @@ bit_fields! {
 
 bit_fields! {
     /// Background/Object color palette index.
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct CgbColor<u16> {
         red: 5,
         green: 5,
@@ -93,6 +100,7 @@ bit_fields! {
 
 bit_fields! {
     /// `TIMA` register control information.
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct TimerCtrl<u8> {
         clock_select: 2,
         enable: 1,
@@ -101,6 +109,7 @@ bit_fields! {
 
 bit_fields! {
     /// Interrupt data, IE and IF register fields.
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct IntrBits<u8> {
         vblank: 1,
         stat: 1,
@@ -124,6 +133,7 @@ impl IntrBits {
 
 bit_fields! {
     /// Dual-speed(for CGB) speed switch register(KEY1).
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct Key1<u8> {
         armed: 1,
         _1: 6,
@@ -137,6 +147,7 @@ bit_fields! {
 // --------------------------------------------------------
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNr52<u8> {
         ch1_on: 1,
         ch2_on: 1,
@@ -148,6 +159,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNr51<u8> {
         ch1_right: 1,
         ch2_right: 1,
@@ -161,6 +173,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNr50<u8> {
         vol_right: 3,
         vin_right: 1,
@@ -170,6 +183,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNx0<u8> {
         shift_step: 3,
         direction: 1,
@@ -178,6 +192,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNx1<u8> {
         length_period: 6,
         wave_duty: 2,
@@ -185,7 +200,7 @@ bit_fields! {
 }
 
 bit_fields! {
-    #[derive(Debug)]
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNx2<u8> {
         pace: 3,
         direction: 2,
@@ -193,12 +208,13 @@ bit_fields! {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 pub(crate) struct AudioNx3 {
     pub(crate) period_low: u8,
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioNx4<u8> {
         period_high: 3,
         _0: 3,
@@ -208,18 +224,20 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioN30<u8> {
         _0: 7,
         dac_on: 1,
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 pub(crate) struct AudioN31 {
     pub(crate) length_period: u8,
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioN32<u8> {
         _0: 5,
         output_level: 2,
@@ -227,6 +245,7 @@ bit_fields! {
 }
 
 bit_fields! {
+    #[derive(Deserialize, Serialize)]
     pub(crate) struct AudioN43<u8> {
         clock_divider: 3,
         lfsr_width: 1,

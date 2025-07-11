@@ -73,7 +73,8 @@ impl EmulatorGui {
         }
     }
 
-    pub fn main_loop(&mut self) {
+    /// Run the emulator and return saved state of the emulator(if requested).
+    pub fn main_loop(&mut self, save_state: bool) -> Option<Box<[u8]>> {
         hint::set(hint::names::RENDER_VSYNC, "1");
 
         let sdl_ctx = sdl3::init().unwrap();
@@ -103,9 +104,16 @@ impl EmulatorGui {
         }
 
         stream.pause().unwrap();
-        self.send(Request::Shutdown);
-        assert!(matches!(self.recieve(), Reply::ShuttingDown));
+
+        self.send(Request::Shutdown { save_state });
+        let ret = match self.recieve() {
+            Reply::ShuttingDown(s) => s,
+            _ => panic!("invalid shutdown reply"),
+        };
+
+        eprintln!(); // endline for frequency printed line.
         self.handle.take().unwrap().join().unwrap();
+        ret
     }
 
     fn update(&mut self, event_pump: &mut EventPump) {
