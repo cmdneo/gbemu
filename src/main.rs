@@ -5,7 +5,6 @@ use std::{
     fs::File,
     io::Write,
     path::PathBuf,
-    process::exit,
 };
 
 use clap::{arg, Parser, Subcommand};
@@ -26,22 +25,22 @@ enum Commands {
         /// Gameboy ROM file
         rom_file: PathBuf,
         /// Save the emulator state into a save file on exit
-        #[arg(long, value_name = "SAVE_FILE")]
+        #[arg(short, long, value_name = "SAVE_FILE")]
         save_to: Option<PathBuf>,
     },
 
     /// Resume the emulator from a save file, on exit the new state is
-    /// saved into the same file unless changed using options below.
+    /// saved into the same file unless changed using options below
     #[command(verbatim_doc_comment, arg_required_else_help = true)]
     Resume {
         /// Saved file
         save_file: PathBuf,
         /// Do not save new state into the current save file
-        #[arg(long, conflicts_with = "save_to")]
+        #[arg(short, long, conflicts_with = "save_to")]
         no_save: bool,
         /// Save new state into the given file while leaving the
         /// current save file unchanged
-        #[arg(long, value_name = "SAVE_FILE", conflicts_with = "no_save")]
+        #[arg(short, long, value_name = "SAVE_FILE", conflicts_with = "no_save")]
         save_to: Option<PathBuf>,
     },
 
@@ -116,8 +115,6 @@ fn main() {
     } else {
         assert!(gui.main_loop(false).is_none());
     }
-
-    eprintln!("Quit.");
 }
 
 fn read_or_exit(path: &PathBuf, err_name: &str) -> Vec<u8> {
@@ -149,7 +146,7 @@ fn write_or_exit(path: &PathBuf, err_name: &str, data: &[u8]) {
 fn err_exit<M: Display, E: Debug>(msg: M, err: E) -> ! {
     eprintln!("{msg}.");
     eprintln!("Error: {err:?}.");
-    exit(1);
+    std::process::exit(1);
 }
 
 fn eprint_keybindings() {

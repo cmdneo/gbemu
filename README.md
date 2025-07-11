@@ -60,13 +60,13 @@ Use `gbemu <command> --help` to show help related to a specific command.
 
 Summary of available commands:
 
-| Command       | Arguments                | Options                 |
-| ------------- | ------------------------ | ----------------------- |
-| `run`         | `<ROM_FILE>`             | `--save-to <SAVE_FILE>` |
-| `resume`      | `<SAVE_FILE>`            | `--save-to <SAVE_FILE>` |
-|               |                          | `--no-save`             |
-| `extract-rom` | `<SAVE_FILE> <ROM_FILE>` |                         |
-|               |                          |                         |
+| Command       | Arguments                | Options                    |
+| ------------- | ------------------------ | -------------------------- |
+| `run`         | `<ROM_FILE>`             | `-s/--save-to <SAVE_FILE>` |
+| `resume`      | `<SAVE_FILE>`            | `-s/--save-to <SAVE_FILE>` |
+|               |                          | `-n/--no-save`             |
+| `extract-rom` | `<SAVE_FILE> <ROM_FILE>` |                            |
+|               |                          |                            |
 
 ### Examples
 

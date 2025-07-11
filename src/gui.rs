@@ -106,10 +106,11 @@ impl EmulatorGui {
             self.draw(&mut canvas);
         }
 
+        // Erase frequency printed line.
+        eprintln!("\r                             ");
         stream.pause().unwrap();
         self.send(Request::Shutdown { save_state });
         self.handle.take().unwrap().join().unwrap();
-        eprintln!(); // endline for frequency printed line.
 
         match self.recieve() {
             Reply::ShuttingDown(s) => s,
