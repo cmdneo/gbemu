@@ -49,7 +49,9 @@ impl Cartidge {
         let is_cgb = matches!(rom[CART_CGB_FLAG], CART_CGB_ONLY);
         let kind = cart_mbc_type(rom[CART_TYPE_FLAG])?;
         let title = rom.get(CART_TITLE).map_or(String::new(), |raw| {
-            String::from_utf8_lossy(raw).to_string()
+            let mut tmp = String::from_utf8_lossy(raw).to_string();
+            tmp.retain(|c| c.is_ascii_graphic() || c == ' ');
+            tmp
         });
 
         let rom_banks = cart_rom_banks(rom[CART_ROM_FLAG])?;

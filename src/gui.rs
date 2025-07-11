@@ -76,27 +76,30 @@ impl EmulatorGui {
     /// Run the emulator and return saved state of the emulator(if requested).
     pub fn main_loop(&mut self, save_state: bool) -> Option<Box<[u8]>> {
         hint::set(hint::names::RENDER_VSYNC, "1");
-
         let sdl_ctx = sdl3::init().unwrap();
         let video_sys = sdl_ctx.video().unwrap();
         let audio_sys = sdl_ctx.audio().unwrap();
+
+        self.send(Request::Start);
+        self.send(Request::GetTitle);
+        self.running = true;
+        let Reply::Title(rom_title) = self.recieve() else {
+            panic!("invalid title reply")
+        };
+
+        let window = video_sys
+            .window(&format!("gbemu - {rom_title}"), WX, WY)
+            .position_centered()
+            .build()
+            .unwrap();
 
         let stream = audio_sys
             .open_playback_stream(&AUDIO_CONFIG, self.audio.take().unwrap())
             .unwrap();
         stream.resume().unwrap();
 
-        let window = video_sys
-            .window("GB Emulator", WX, WY)
-            .position_centered()
-            .build()
-            .unwrap();
-
         let mut canvas = window.into_canvas();
         let mut event_pump = sdl_ctx.event_pump().unwrap();
-
-        self.send(Request::Start);
-        self.running = true;
 
         while self.running {
             self.update(&mut event_pump);
@@ -104,16 +107,14 @@ impl EmulatorGui {
         }
 
         stream.pause().unwrap();
-
         self.send(Request::Shutdown { save_state });
-        let ret = match self.recieve() {
+        self.handle.take().unwrap().join().unwrap();
+        eprintln!(); // endline for frequency printed line.
+
+        match self.recieve() {
             Reply::ShuttingDown(s) => s,
             _ => panic!("invalid shutdown reply"),
-        };
-
-        eprintln!(); // endline for frequency printed line.
-        self.handle.take().unwrap().join().unwrap();
-        ret
+        }
     }
 
     fn update(&mut self, event_pump: &mut EventPump) {
