@@ -28,30 +28,3 @@ pub enum EmulatorErr {
     UnknownMBC,
     NotImplemented,
 }
-
-#[inline(always)]
-const fn mask_usize(bits: u32) -> usize {
-    if bits == usize::BITS {
-        !0
-    } else {
-        !(!0 << bits)
-    }
-}
-
-#[inline(always)]
-const fn mask_u16(bits: u32) -> u16 {
-    if bits == u16::BITS {
-        !0
-    } else {
-        !(!0 << bits)
-    }
-}
-
-#[inline(always)]
-const fn mask_u8(bits: u32) -> u8 {
-    if bits == u8::BITS {
-        !0
-    } else {
-        !(!0 << bits)
-    }
-}

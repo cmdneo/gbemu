@@ -5,7 +5,7 @@ mod table;
 use bincode::{Decode, Encode};
 use std::num::Wrapping;
 
-use crate::{info, log, macros::bit_fields, mask_u16, mmu::Mmu, regs::Key1};
+use crate::{info, log, macros::bit_fields, mmu::Mmu, regs::Key1};
 use isa::{Cond, Instr, Opcode, Operand, Reg};
 
 /// Gameboy CPU emulator with support for double speed mode.  
@@ -759,5 +759,14 @@ fn get_hl_reg_delta(op: Operand) -> i16 {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[inline(always)]
+const fn mask_u16(bits: u32) -> u16 {
+    if bits == u16::BITS {
+        !0
+    } else {
+        !(!0 << bits)
     }
 }

@@ -5,7 +5,6 @@ use crate::{
     cartridge::Cartidge,
     info::*,
     macros::match_range,
-    mask_u8,
     ppu::Ppu,
     regs::{ActionButtons, CgbPaletteIndex, DPad, IntrBits, JoyPad, Key1},
     serial::Serial,
@@ -374,4 +373,13 @@ fn is_cart_addr(addr: usize) -> bool {
 #[inline]
 fn get_echo_ram_addr(rel_addr: usize) -> usize {
     (rel_addr & ECHO_RAM_ADDR_MASK) + *ADDR_WRAM0.start()
+}
+
+#[inline(always)]
+const fn mask_u8(bits: u32) -> u8 {
+    if bits == u8::BITS {
+        !0
+    } else {
+        !(!0 << bits)
+    }
 }
