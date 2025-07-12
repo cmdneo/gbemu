@@ -153,8 +153,8 @@ fn eprint_keybindings() {
     eprintln!("--------Emulator Keybindings--------");
     eprintln!("START  : backspace");
     eprintln!("SELECT : return");
-    eprintln!("A      : Z");
-    eprintln!("B      : X");
+    eprintln!("A      : X/E");
+    eprintln!("B      : Z/Q");
     eprintln!("UP     : W/↑");
     eprintln!("DOWN   : S/↓");
     eprintln!("LEFT   : A/←");

@@ -147,8 +147,8 @@ impl EmulatorGui {
         let s = KeyboardState::new(event_pump);
         let pressed = |scancode| s.is_scancode_pressed(scancode);
         let btn_state = gbemu::ButtonState {
-            a: pressed(Scancode::Z),
-            b: pressed(Scancode::X),
+            a: pressed(Scancode::X) || pressed(Scancode::E),
+            b: pressed(Scancode::Z) || pressed(Scancode::Q),
             select: pressed(Scancode::Return),
             start: pressed(Scancode::Backspace),
             up: pressed(Scancode::W) || pressed(Scancode::Up),
