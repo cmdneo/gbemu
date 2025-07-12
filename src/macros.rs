@@ -125,16 +125,5 @@ macro_rules! match_range {
     };
 }
 
-macro_rules! either {
-    ($cond:expr, $val_t:expr, $val_f:expr) => {
-        if $cond {
-            $val_t
-        } else {
-            $val_f
-        }
-    };
-}
-
 pub(crate) use bit_fields;
-pub(crate) use either;
 pub(crate) use match_range;

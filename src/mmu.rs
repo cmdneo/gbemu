@@ -99,6 +99,7 @@ impl Mmu {
             self.iflag.serial = 1;
         }
 
+        self.cart.tick(dots);
         self.apu.tick(dots, self.timer.apu_ticks);
     }
 

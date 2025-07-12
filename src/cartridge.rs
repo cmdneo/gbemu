@@ -1,43 +1,21 @@
+mod mbc;
+mod rtc;
+
 use bincode::{Decode, Encode};
 
-use crate::{
-    info::*,
-    macros::{either, match_range},
-    mask_usize, EmulatorErr,
-};
+use crate::{info::*, macros::match_range, EmulatorErr};
+use mbc::{Mbc, MbcKind};
 
 #[derive(Encode, Decode)]
 pub(crate) struct Cartidge {
     pub(crate) is_cgb: bool,
     pub(crate) title: String,
-
     pub(crate) rom: Box<[u8]>,
     pub(crate) ram: Box<[u8]>,
-    kind: MbcType,
-    rom0_off: usize,
-    rom1_off: usize,
-    ram_off: usize,
-
-    // MBC registers
-    ram_enabled: bool,
-    bank_mode: bool,
-    bank_lo: usize,
-    bank_hi: usize,
+    mbc: Mbc,
 }
 
-#[derive(Debug, Encode, Decode)]
-enum MbcType {
-    None,
-    Mbc1,
-    Mbc2,
-    Mbc3,
-    Mbc5,
-    Mbc6,
-    Mbc7,
-    Mmm01,
-    HuC1,
-    HuC3,
-}
+const MBC2_BUILTIN_RAM_SIZE: usize = 512;
 
 impl Cartidge {
     /// Copy the rom and create a new cartridge.
@@ -47,7 +25,7 @@ impl Cartidge {
         }
 
         let is_cgb = matches!(rom[CART_CGB_FLAG], CART_CGB_ONLY);
-        let kind = cart_mbc_type(rom[CART_TYPE_FLAG])?;
+        let mbc = Mbc::new(rom[CART_TYPE_FLAG])?;
         let title = rom.get(CART_TITLE).map_or(String::new(), |raw| {
             let mut tmp = String::from_utf8_lossy(raw).to_string();
             tmp.retain(|c| c.is_ascii_graphic() || c == ' ');
@@ -56,12 +34,19 @@ impl Cartidge {
 
         let rom_banks = cart_rom_banks(rom[CART_ROM_FLAG])?;
         let ram_banks = cart_ram_banks(rom[CART_RAM_FLAG])?;
-        let ram = vec![0; SIZE_EXT_RAM_BANK * ram_banks];
+        let ram = vec![
+            0;
+            if matches!(mbc.kind, MbcKind::Mbc2 { .. }) {
+                MBC2_BUILTIN_RAM_SIZE
+            } else {
+                SIZE_EXT_RAM_BANK * ram_banks
+            }
+        ];
 
         eprintln!("-------------Cartridge-------------");
         eprintln!("Title : {title}");
         eprintln!("Mode  : {}", if is_cgb { "CGB" } else { "DMG" });
-        eprintln!("MBC   : {kind:?}");
+        eprintln!("MBC   : {}", mbc.kind.name());
         eprintln!("RAM   : {} KiB", ram_banks * 8);
         eprintln!("ROM   : {} KiB", rom_banks * 16);
         eprintln!();
@@ -70,10 +55,6 @@ impl Cartidge {
         if is_cgb {
             return Err(EmulatorErr::NotImplemented);
         }
-        match kind {
-            MbcType::None | MbcType::Mbc1 => (),
-            _ => return Err(EmulatorErr::NotImplemented),
-        }
         if rom_banks * SIZE_ROM_BANK != rom.len() {
             return Err(EmulatorErr::RomSizeMismatch);
         }
@@ -81,110 +62,33 @@ impl Cartidge {
         Ok(Self {
             is_cgb,
             title,
-            kind,
             rom: rom.into_boxed_slice(),
             ram: ram.into_boxed_slice(),
-            rom0_off: 0,
-            rom1_off: SIZE_ROM_BANK,
-            ram_off: 0,
-            ram_enabled: false,
-            bank_lo: 1,
-            bank_hi: 0,
-            bank_mode: false,
+            mbc,
         })
+    }
+
+    pub(crate) fn tick(&mut self, dots: u32) {
+        self.mbc.rtc.tick(dots);
     }
 
     pub(crate) fn read(&self, addr: usize) -> u8 {
         match_range! { a@addr {
-            ADDR_EXT_RAM => { self.read_ram((addr % SIZE_EXT_RAM_BANK) + self.ram_off) }
-            ADDR_ROM0 => { self.read_rom((addr % SIZE_ROM_BANK) + self.rom0_off) }
-            ADDR_ROM1 => { self.read_rom((addr % SIZE_ROM_BANK) + self.rom1_off) }
+            ADDR_EXT_RAM => { self.read_ram(self.mbc.ram_addr(addr)) }
+            ADDR_ROM0 => { self.read_rom(self.mbc.rom0_addr(addr)) }
+            ADDR_ROM1 => { self.read_rom(self.mbc.rom1_addr(addr)) }
             _ => { 0xFF }
         }}
     }
 
     pub(crate) fn write(&mut self, addr: usize, val: u8) {
         if ADDR_EXT_RAM.contains(&addr) {
-            self.write_ram((addr % SIZE_EXT_RAM_BANK) + self.ram_off, val);
-            return;
+            if self.mbc.ram_enabled {
+                self.write_ram(self.mbc.ram_addr(addr), val);
+            }
+        } else {
+            self.mbc.write(addr, val);
         }
-
-        match self.kind {
-            MbcType::None => (),
-            MbcType::Mbc1 => self.write_mbc1(addr, val),
-            MbcType::Mbc2 => self.write_mbc2(addr, val),
-            MbcType::Mbc3 => self.write_mbc3(addr, val),
-            MbcType::Mbc5 => self.write_mbc5(addr, val),
-            MbcType::Mbc6 => self.write_mbc6(addr, val),
-            MbcType::Mbc7 => self.write_mbc7(addr, val),
-            MbcType::Mmm01 => self.write_mmm01(addr, val),
-            MbcType::HuC1 => self.write_huc1(addr, val),
-            MbcType::HuC3 => self.write_huc3(addr, val),
-        }
-    }
-
-    fn write_mbc1(&mut self, addr: usize, val: u8) {
-        let val = val as usize;
-        match addr {
-            // RAM enable: write 0xA
-            0x0000..=0x1FFF => self.ram_enabled = val == 0xA,
-            // ROM bank: 5 bits
-            0x2000..=0x3FFF => self.bank_lo = val & mask_usize(5),
-            // RAM bank or Upper bits of ROM bank: 2 bits
-            0x4000..=0x5FFF => self.bank_hi = val & mask_usize(2),
-            // Banking mode select: 1 bit
-            0x6000..=0x7FFF => self.bank_mode = val & mask_usize(1) == 1,
-            _ => (),
-        }
-
-        if self.bank_lo == 0 {
-            self.bank_lo = 1;
-        }
-
-        let bank0 = either!(self.bank_mode, self.bank_hi, 0);
-        self.ram_off = bank0 << 13;
-        self.rom0_off = bank0 << 19;
-        self.rom1_off = self.bank_lo << 14 | self.bank_hi << 19;
-    }
-
-    fn write_mbc2(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_mbc3(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_mbc5(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_mbc6(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_mbc7(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_mmm01(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_huc1(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
-    }
-
-    fn write_huc3(&mut self, addr: usize, val: u8) {
-        _ = (addr, val);
-        todo!();
     }
 
     fn read_rom(&self, addr: usize) -> u8 {
@@ -192,48 +96,20 @@ impl Cartidge {
     }
 
     fn read_ram(&self, addr: usize) -> u8 {
-        *self.ram.get(addr).unwrap_or(&0xFF)
+        if let Some(reg) = self.mbc.kind.get_mbc3_rtc_reg_if_set() {
+            self.mbc.rtc.read(reg)
+        } else {
+            *self.ram.get(addr).unwrap_or(&0xFF)
+        }
     }
 
     fn write_ram(&mut self, addr: usize, val: u8) {
-        if let Some(v) = self.ram.get_mut(addr) {
+        if let Some(reg) = self.mbc.kind.get_mbc3_rtc_reg_if_set() {
+            self.mbc.rtc.write(reg, val);
+        } else if let Some(v) = self.ram.get_mut(addr) {
             *v = val;
         }
     }
-}
-
-fn cart_mbc_type(v: u8) -> Result<MbcType, EmulatorErr> {
-    use MbcType::*;
-
-    Ok(match v {
-        0x00 => None,
-        0x01 => Mbc1,
-        0x02 => Mbc1,
-        0x03 => Mbc1,
-        0x05 => Mbc2,
-        0x06 => Mbc2,
-        0x08 => None,
-        0x09 => None,
-        0x0B => Mmm01,
-        0x0C => Mmm01,
-        0x0D => Mmm01,
-        0x0F => Mbc3,
-        0x10 => Mbc3,
-        0x11 => Mbc3,
-        0x12 => Mbc3,
-        0x13 => Mbc3,
-        0x19 => Mbc5,
-        0x1A => Mbc5,
-        0x1B => Mbc5,
-        0x1C => Mbc5,
-        0x1D => Mbc5,
-        0x1E => Mbc5,
-        0x20 => Mbc6,
-        0x22 => Mbc7,
-        0xFE => HuC3,
-        0xFF => HuC1,
-        _ => return Err(EmulatorErr::UnknownMBC),
-    })
 }
 
 /// Number of ROM banks, each of 16KiB.

@@ -11,7 +11,7 @@ Features:
 - Audio support (APU implementation)
 - Mostly accurate rendering
 - Color palettes for monochrome games
-- MBC1 implementation (others to be implemented)
+- MBC1, MBC2 and MBC3(with RTC) implementation (others to be implemented)
 
 ## Screenshots
 
