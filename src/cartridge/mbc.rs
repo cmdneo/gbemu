@@ -125,7 +125,7 @@ impl Mbc {
         };
 
         (self.ram_bank, self.rom0_bank, self.rom1_bank) = match &mut self.kind {
-            MbcKind::None => (0, 0, 0),
+            MbcKind::None => (0, 0, 1),
 
             MbcKind::Mbc1 {
                 rom_bank_lo,
