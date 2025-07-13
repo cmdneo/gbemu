@@ -7,6 +7,7 @@ It passes Blargg's `cpu_instr.gb` and `instr_timing.gb` test ROMs' tests.
 
 Features:
 
+- Controller/Gamepad support
 - Save and resume emulator state
 - Audio support (APU implementation)
 - Mostly accurate rendering
@@ -19,26 +20,26 @@ Features:
 
 ## Keybindings
 
-| Gameboy Key | Keyboard Key |
-| ----------- | ------------ |
-| START       | backspace    |
-| SELECT      | return       |
-| A           | X/E          |
-| B           | Z/Q          |
-| UP          | W/↑          |
-| DOWN        | S/↓          |
-| LEFT        | A/←          |
-| RIGHT       | D/→          |
+| Gameboy | Keyboard  | Xbox      |
+| ------- | --------- | --------- |
+| START   | backspace | start     |
+| SELECT  | return    | back      |
+| A       | X         | A         |
+| B       | Z         | X         |
+| UP      | W/↑       | DPad/LS ↑ |
+| DOWN    | S/↓       | DPad/LS ↓ |
+| LEFT    | A/←       | DPad/LS ← |
+| RIGHT   | D/→       | DPad/LS → |
 
-| Function       | Keyboard Key |
-| -------------- | ------------ |
-| Change palette | space        |
-| Exit emulator  | escape       |
+| Function       | Keyboard |
+| -------------- | -------- |
+| Change palette | space    |
+| Exit emulator  | escape   |
 
 ## Building
 
-It depends on [SDL3](https://wiki.libsdl.org/SDL3/FrontPage) for graphics and
-sound, so install it first before building.  
+It depends on [SDL3](https://wiki.libsdl.org/SDL3/FrontPage) for graphics,
+sound and input handling, so install it first before building.  
 SDL3 can be installed by following the instructions here
 [SDL3 Installation](https://github.com/libsdl-org/SDL/blob/main/INSTALL.md).
 Some platforms provide it via a package manager, I have listed a few common ones below:

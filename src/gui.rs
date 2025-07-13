@@ -1,8 +1,9 @@
-use std::{sync::mpsc, thread};
+use std::{collections::HashMap, sync::mpsc, thread};
 
 use sdl3::{
     audio,
     event::Event,
+    gamepad::{Axis, Button, Gamepad},
     hint,
     keyboard::{KeyboardState, Scancode},
     pixels::Color,
@@ -24,12 +25,15 @@ const AUDIO_CONFIG: audio::AudioSpec = audio::AudioSpec {
 };
 
 pub struct EmulatorGui {
+    sdl_ctx: sdl3::Sdl,
+    gamepad_sys: sdl3::GamepadSubsystem,
+
+    running: bool,
     request_tx: mpsc::Sender<Request>,
     reply_rx: mpsc::Receiver<Reply>,
-
-    audio: Option<EmulatorAudio>,
+    gamepads: HashMap<u32, Gamepad>,
     handle: Option<thread::JoinHandle<()>>,
-    running: bool,
+    audio: Option<EmulatorAudio>,
 }
 
 struct EmulatorAudio {
@@ -56,36 +60,41 @@ impl EmulatorGui {
         let (reply_tx, reply_rx) = mpsc::channel();
         let (audio_ctrl_tx, audio_ctrl_rx) = mpsc::channel();
         let (audio_data_tx, audio_data_rx) = mpsc::channel();
-
         let handle = thread::spawn(move || {
             emulator.run(request_rx, reply_tx, audio_ctrl_rx, audio_data_tx);
         });
 
+        hint::set(hint::names::RENDER_VSYNC, "1");
+        let sdl_ctx = sdl3::init().unwrap();
+        let gamepad_sys = sdl_ctx.gamepad().unwrap();
+
         Self {
+            sdl_ctx,
+            gamepad_sys,
+
+            running: false,
             request_tx,
             reply_rx,
+            gamepads: Default::default(),
+            handle: Some(handle),
             audio: Some(EmulatorAudio {
                 audio_ctrl_tx,
                 audio_data_rx,
             }),
-            handle: Some(handle),
-            running: false,
         }
     }
 
     /// Run the emulator and return saved state of the emulator(if requested).
     pub fn main_loop(&mut self, save_state: bool) -> Option<Box<[u8]>> {
-        hint::set(hint::names::RENDER_VSYNC, "1");
-        let sdl_ctx = sdl3::init().unwrap();
-        let video_sys = sdl_ctx.video().unwrap();
-        let audio_sys = sdl_ctx.audio().unwrap();
-
         self.send(Request::Start);
         self.send(Request::GetTitle);
         self.running = true;
         let Reply::Title(rom_title) = self.recieve() else {
             panic!("invalid title reply")
         };
+
+        let video_sys = self.sdl_ctx.video().unwrap();
+        let audio_sys = self.sdl_ctx.audio().unwrap();
 
         let window = video_sys
             .window(&format!("gbemu - {rom_title}"), WX, WY)
@@ -99,7 +108,7 @@ impl EmulatorGui {
         stream.resume().unwrap();
 
         let mut canvas = window.into_canvas();
-        let mut event_pump = sdl_ctx.event_pump().unwrap();
+        let mut event_pump = self.sdl_ctx.event_pump().unwrap();
 
         while self.running {
             self.update(&mut event_pump);
@@ -126,10 +135,22 @@ impl EmulatorGui {
                     scancode: Some(Scancode::Escape),
                     ..
                 } => self.running = false,
+
                 Event::KeyDown {
                     scancode: Some(Scancode::Space),
                     ..
                 } => self.send(Request::CyclePalette),
+
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Ok(g) = self.gamepad_sys.open(which) {
+                        self.gamepads.insert(which, g);
+                    }
+                }
+
+                Event::ControllerDeviceRemoved { which, .. } => {
+                    self.gamepads.remove(&which);
+                }
+
                 _ => (),
             }
         }
@@ -138,32 +159,47 @@ impl EmulatorGui {
 
         self.send(Request::GetFrequency);
         let Reply::Frequency(freq) = self.recieve() else {
-            panic!("invalid reply")
+            panic!("invalid frequency reply")
         };
         eprint!("\r=> {:.3} MHz", freq / 1e6);
     }
 
-    fn update_keystate(&self, event_pump: &EventPump) {
+    fn update_keystate(&mut self, event_pump: &EventPump) {
         let s = KeyboardState::new(event_pump);
-        let pressed = |scancode| s.is_scancode_pressed(scancode);
-        let btn_state = gbemu::ButtonState {
-            a: pressed(Scancode::X) || pressed(Scancode::E),
-            b: pressed(Scancode::Z) || pressed(Scancode::Q),
-            select: pressed(Scancode::Return),
-            start: pressed(Scancode::Backspace),
-            up: pressed(Scancode::W) || pressed(Scancode::Up),
-            down: pressed(Scancode::S) || pressed(Scancode::Down),
-            left: pressed(Scancode::A) || pressed(Scancode::Left),
-            right: pressed(Scancode::D) || pressed(Scancode::Right),
+        let keydown = |scancode| s.is_scancode_pressed(scancode);
+        let mut pressed = gbemu::ButtonState {
+            a: keydown(Scancode::X),
+            b: keydown(Scancode::Z),
+            select: keydown(Scancode::Return),
+            start: keydown(Scancode::Backspace),
+            up: keydown(Scancode::W) || keydown(Scancode::Up),
+            down: keydown(Scancode::S) || keydown(Scancode::Down),
+            left: keydown(Scancode::A) || keydown(Scancode::Left),
+            right: keydown(Scancode::D) || keydown(Scancode::Right),
         };
 
-        self.send(Request::UpdateButtonState(btn_state));
+        for g in self.gamepads.values() {
+            // Treat left joystick as Dpad presses over a threshold.
+            const THRES: i16 = i16::MAX / 2;
+            pressed |= gbemu::ButtonState {
+                a: g.button(Button::South),
+                b: g.button(Button::West),
+                select: g.button(Button::Back),
+                start: g.button(Button::Start),
+                up: g.button(Button::DPadUp) || g.axis(Axis::LeftY) < -THRES,
+                down: g.button(Button::DPadDown) || g.axis(Axis::LeftY) > THRES,
+                left: g.button(Button::DPadLeft) || g.axis(Axis::LeftX) < -THRES,
+                right: g.button(Button::DPadRight) || g.axis(Axis::LeftX) > THRES,
+            };
+        }
+
+        self.send(Request::UpdateButtonState(pressed));
     }
 
     fn draw(&self, canvas: &mut Canvas<Window>) {
         self.send(Request::GetVideoFrame);
         let Reply::VideoFrame(pixels) = self.recieve() else {
-            panic!("invalid reply")
+            panic!("invalid frame reply")
         };
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));

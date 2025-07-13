@@ -150,19 +150,24 @@ fn err_exit<M: Display, E: Debug>(msg: M, err: E) -> ! {
 }
 
 fn eprint_keybindings() {
-    eprintln!("--------Emulator Keybindings--------");
-    eprintln!("START  : backspace");
-    eprintln!("SELECT : return");
-    eprintln!("A      : X/E");
-    eprintln!("B      : Z/Q");
-    eprintln!("UP     : W/↑");
-    eprintln!("DOWN   : S/↓");
-    eprintln!("LEFT   : A/←");
-    eprintln!("RIGHT  : D/→");
-    eprintln!();
+    eprintln!("------------Keybindings------------");
+    eprintln!(
+        r#"
+| Gameboy | Keyboard  | Xbox      |
+| ------- | --------- | --------- |
+| START   | backspace | start     |
+| SELECT  | return    | back      |
+| A       | X         | A         |
+| B       | Z         | X         |
+| UP      | W/↑       | DPad/LS ↑ |
+| DOWN    | S/↓       | DPad/LS ↓ |
+| LEFT    | A/←       | DPad/LS ← |
+| RIGHT   | D/→       | DPad/LS → |
 
-    eprintln!("--------Control Keybindings---------");
-    eprintln!("Change palette  : space");
-    eprintln!("Exit emulator   : escape");
-    eprintln!();
+|     Function      |  Keyboard   |
+| ----------------- | ----------- |
+|   Change palette  |   space     |
+|   Exit emulator   |   escape    |
+"#
+    );
 }
