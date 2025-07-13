@@ -100,6 +100,27 @@ pub struct ButtonState {
     pub right: bool,
 }
 
+impl std::ops::BitOrAssign for ButtonState {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.a |= rhs.a;
+        self.b |= rhs.b;
+        self.select |= rhs.select;
+        self.start |= rhs.start;
+        self.up |= rhs.up;
+        self.down |= rhs.down;
+        self.left |= rhs.left;
+        self.right |= rhs.right;
+    }
+}
+
+impl std::ops::BitOr for ButtonState {
+    type Output = Self;
+    fn bitor(mut self, rhs: Self) -> Self::Output {
+        self |= rhs;
+        self
+    }
+}
+
 impl ButtonState {
     pub(crate) fn to_internal_repr(self) -> (regs::DPad, regs::ActionButtons) {
         let dpad = regs::DPad {

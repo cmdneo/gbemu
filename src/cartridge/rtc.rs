@@ -24,6 +24,10 @@ struct Clock {
 
 impl Clock {
     fn tick(&mut self, seconds: u32) {
+        if seconds == 0 {
+            return;
+        }
+
         let mut x = seconds;
         (self.s, x) = mod_add(self.s, x, 60);
         (self.m, x) = mod_add(self.m, x, 60);
