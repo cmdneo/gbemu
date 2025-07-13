@@ -1,38 +1,26 @@
-use bincode::{Decode, Encode};
+use crate::{counter::Counter, info, macros::bit_fields};
 
-use crate::{counter::Counter, info};
-
-const DAYS_MAX: u32 = 0x1FF; // 9-bits are used for day
-
-#[derive(Default, Encode, Decode)]
+#[derive(Default, bincode::Encode, bincode::Decode)]
 pub(crate) struct Mbc3Rtc {
     counter: Counter,
     latched: Option<[u8; 5]>,
-    clk: Clock,
 
-    halt: bool,
-    overflowed: bool,
+    sec: u8,
+    min: u8,
+    hr: u8,
+    day: u8,
+    #[bincode(with_serde)]
+    ctrl: RtcCtrlReg,
 }
 
-#[derive(Default, Encode, Decode)]
-struct Clock {
-    s: u32,
-    m: u32,
-    h: u32,
-    d: u32,
-}
-
-impl Clock {
-    fn tick(&mut self, seconds: u32) {
-        if seconds == 0 {
-            return;
-        }
-
-        let mut x = seconds;
-        (self.s, x) = mod_add(self.s, x, 60);
-        (self.m, x) = mod_add(self.m, x, 60);
-        (self.h, x) = mod_add(self.h, x, 24);
-        self.d = self.d.saturating_add(x);
+bit_fields! {
+    // MBC3 RTC 0xC register:
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct RtcCtrlReg<u8> {
+        day: 1,
+        _0: 5,
+        halt: 1,
+        overflow: 1,
     }
 }
 
@@ -45,80 +33,82 @@ impl Mbc3Rtc {
     }
 
     pub(crate) fn tick(&mut self, dots: u32) {
-        if self.halt {
+        if self.ctrl.halt == 1 {
             return;
         }
 
-        self.clk.tick(self.counter.tick(dots));
-        self.overflowed = self.clk.d > DAYS_MAX;
+        for _ in 0..self.counter.tick(dots) {
+            self.adjust_registers(true);
+        }
     }
 
     pub(crate) fn set_latching(&mut self, enable: bool) {
         if enable {
-            self.latched = Some([
-                self.clk.s as u8,
-                self.clk.m as u8,
-                self.clk.h as u8,
-                self.clk.d as u8,
-                self.read_reg_c() as u8,
-            ]);
+            self.latched = Some([self.sec, self.min, self.hr, self.day, self.ctrl.read()]);
         } else {
             self.latched = None;
         }
     }
 
-    pub(crate) fn read(&self, reg: usize) -> u8 {
+    pub(crate) fn read(&self, reg_id: usize) -> u8 {
         if let Some(saved) = self.latched {
-            return *saved.get(reg - 0x8).unwrap_or(&0xFF);
+            return *saved.get(reg_id - 0x8).unwrap_or(&0xFF);
         }
 
-        (match reg {
-            0x8 => self.clk.s,
-            0x9 => self.clk.m,
-            0xA => self.clk.h,
-            0xB => self.clk.d,
-            0xC => self.read_reg_c(),
+        match reg_id {
+            0x8 => self.sec,
+            0x9 => self.min,
+            0xA => self.hr,
+            0xB => self.day,
+            0xC => self.ctrl.read(),
             _ => 0xFF,
-        }) as u8
+        }
     }
 
-    pub(crate) fn write(&mut self, reg: usize, val: u8) {
-        let val = val as u32;
-        match reg {
-            0x8 => self.clk.s = val & mask(6),
-            0x9 => self.clk.m = val & mask(6),
-            0xA => self.clk.h = val & mask(5),
-            0xB => self.clk.d = val,
-            0xC => self.write_reg_c(val & (1 | 0b11 << 6)),
+    pub(crate) fn write(&mut self, reg_id: usize, val: u8) {
+        match reg_id {
+            0x8 => self.sec = val,
+            0x9 => self.min = val,
+            0xA => self.hr = val,
+            0xB => self.day = val,
+            0xC => self.ctrl.write(val & 0xC1),
             _ => (),
         }
+
+        self.adjust_registers(false);
     }
 
-    fn read_reg_c(&self) -> u32 {
-        // MBC3 RTC 0xC register:
-        // Bit 0: Day 8th bit, Bit 6: Halt, Bit 7: Overflow
-        ((self.clk.d >> 8) & 1) | (self.halt as u32) << 6 | (self.overflowed as u32) << 7
-    }
-
-    fn write_reg_c(&mut self, val: u32) {
-        if val & 1 == 1 {
-            self.clk.d |= 1 << 8;
-        } else {
-            self.clk.d &= !(1 << 8);
-        }
-
-        self.halt = (val >> 6) & 1 == 1;
-        self.overflowed = (val >> 7) & 1 == 1;
+    fn adjust_registers(&mut self, inc: bool) {
+        let mut rst = inc;
+        (self.sec, rst) = adjust_reg(self.sec, 59, 6, rst);
+        (self.min, rst) = adjust_reg(self.min, 59, 6, rst);
+        (self.hr, rst) = adjust_reg(self.hr, 23, 5, rst);
+        (self.day, rst) = adjust_reg(self.day, 255, 8, rst);
+        (self.ctrl.day, rst) = adjust_reg(self.ctrl.day, 1, 1, rst);
+        self.ctrl.overflow |= rst as u8; // Is only reset when written to
     }
 }
 
-const fn mod_add(v: u32, u: u32, modulo: u32) -> (u32, u32) {
-    ((v + u) % modulo, (v + u) / modulo)
+/// Correct RTC register value, it involves masking out extraneous
+/// bits and resetting the register if increment on `wrap_on` value.
+/// Note that increment on a value higher that wrap_on or register's max
+/// value does not count as a reset.
+/// Returns new value and true if register reset.
+fn adjust_reg(old: u8, wrap_on: u8, width: u32, inc: bool) -> (u8, bool) {
+    if inc {
+        if old == wrap_on {
+            (0, true)
+        } else {
+            ((old.wrapping_add(1)) & mask(width), false)
+        }
+    } else {
+        (old & mask(width), false)
+    }
 }
 
 #[inline(always)]
-const fn mask(bits: u32) -> u32 {
-    if bits == u32::BITS {
+const fn mask(bits: u32) -> u8 {
+    if bits == u8::BITS {
         !0
     } else {
         !(!0 << bits)
